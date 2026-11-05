@@ -1,4 +1,4 @@
-// round-box-clock: analog clock face. See clock_face.h.
+﻿// round-box-clock: analog clock face. See clock_face.h.
 //
 // Layout, outside in:
 //   outer ring  - Roman numerals XII/III/VI/IX (Cinzel), short slim marks at the other eight hours
@@ -6,8 +6,8 @@
 //   hands       - classic tall-case ("grandfather") style:
 //                 hour   = ringed tail, wedge with thorns, Breguet ring, spade, needle tip
 //                 minute = ringed tail, wedge, double loop, thorns, lozenge, long needle
-//                 second = grey needle, diamond near the tip, hollow counterweight
-// Palettes: day = ivory face, near-black hands; night = black face, light grey hands.
+//                 second = needle (same ink as the hands), diamond near the tip, hollow counterweight
+// Palettes: day = parchment face, near-black hands; night = inverse (black face, parchment hands).
 //
 // Rendering: ticks and hands are rasterized here in software, not with LVGL's
 // triangle/arc drawing. LVGL 9.3's SW triangle fill produced visible garbage
@@ -27,33 +27,37 @@
 #include <cstring>
 #include <initializer_list>
 
-LV_FONT_DECLARE(font_cinzel_32);  // Cinzel (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
+LV_FONT_DECLARE(font_cinzel_26);  // Cinzel (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
 
 #define TAG "ClockFace"
 
 namespace {
 
-const lv_font_t* const kNumeralFont = &font_cinzel_32;
+const lv_font_t* const kNumeralFont = &font_cinzel_26;
 
 // Day runs [kDayStartHour, kNightStartHour). Fixed for now; sunrise/sunset is roadmap step 4.
 constexpr int kDayStartHour = 7;
 constexpr int kNightStartHour = 19;
 
+// Night is the inverse of day: the day face colour becomes the night ink.
+constexpr uint32_t kParchment = 0xE3D3B4;  // warm, soft day face (ivory F3EBD9 read too bright)
+constexpr uint32_t kInk = 0x1C1A18;        // warm near-black
+
 const ClockFace::Palette kDay = {
-    .face = lv_color_hex(0xF3EBD9),         // warm ivory
+    .face = lv_color_hex(kParchment),
     .numeral = lv_color_hex(0x2A2420),
     .hour_mark = lv_color_hex(0x2A2420),
-    .minute_tick = lv_color_hex(0xA39A88),
-    .hand = lv_color_hex(0x1C1A18),
-    .second_hand = lv_color_hex(0x7C766E),
+    .minute_tick = lv_color_hex(0x9C8C70),
+    .hand = lv_color_hex(kInk),
+    .second_hand = lv_color_hex(kInk),
 };
 const ClockFace::Palette kNight = {
     .face = lv_color_hex(0x000000),
-    .numeral = lv_color_hex(0xB4B4B4),
-    .hour_mark = lv_color_hex(0xB4B4B4),
-    .minute_tick = lv_color_hex(0x3C3C3C),
-    .hand = lv_color_hex(0xB4B4B4),
-    .second_hand = lv_color_hex(0x707070),
+    .numeral = lv_color_hex(kParchment),
+    .hour_mark = lv_color_hex(kParchment),
+    .minute_tick = lv_color_hex(0x4A4436),  // parchment at ~30%
+    .hand = lv_color_hex(kParchment),
+    .second_hand = lv_color_hex(kParchment),
 };
 
 constexpr float kPi = 3.14159265f;
@@ -332,11 +336,11 @@ void ClockFace::Render() {
         m.Flush(pixels_, p.second_hand);
     }
 
-    // Centre cap.
+    // Centre cap: solid boss with a face-coloured pivot hole.
     Disc(m, {c0, c0}, 7);
     m.Flush(pixels_, p.hand);
-    Disc(m, {c0, c0}, 4);
-    m.Flush(pixels_, p.second_hand);
+    Disc(m, {c0, c0}, 2.5f);
+    m.Flush(pixels_, p.face);
 
     lv_obj_invalidate(canvas_);
 }
