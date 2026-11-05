@@ -40,14 +40,14 @@ constexpr int kDayStartHour = 7;
 constexpr int kNightStartHour = 19;
 
 // Night is the inverse of day: the day face colour becomes the night ink.
-constexpr uint32_t kParchment = 0xE3D3B4;  // warm, soft day face (ivory F3EBD9 read too bright)
+constexpr uint32_t kParchment = 0xD8C29A;  // warm parchment; the panel's cool white point needs this much warmth (E3D3B4 read white). ~9.9:1 vs ink
 constexpr uint32_t kInk = 0x1C1A18;        // warm near-black
 
 const ClockFace::Palette kDay = {
     .face = lv_color_hex(kParchment),
     .numeral = lv_color_hex(0x2A2420),
     .hour_mark = lv_color_hex(0x2A2420),
-    .minute_tick = lv_color_hex(0x9C8C70),
+    .minute_tick = lv_color_hex(0x8C7A5A),
     .hand = lv_color_hex(kInk),
     .second_hand = lv_color_hex(kInk),
 };
@@ -55,7 +55,7 @@ const ClockFace::Palette kNight = {
     .face = lv_color_hex(0x000000),
     .numeral = lv_color_hex(kParchment),
     .hour_mark = lv_color_hex(kParchment),
-    .minute_tick = lv_color_hex(0x4A4436),  // parchment at ~30%
+    .minute_tick = lv_color_hex(0x48402E),  // parchment at ~30%
     .hand = lv_color_hex(kParchment),
     .second_hand = lv_color_hex(kParchment),
 };
