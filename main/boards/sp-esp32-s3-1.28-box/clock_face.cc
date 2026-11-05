@@ -1,31 +1,107 @@
 // round-box-clock: analog clock face. See clock_face.h.
 //
-// Layout (outside in): 12/3/6/9 numerals on the outer ring, then a ring of
-// 60 tick marks (lv_scale, ROUND_INNER, no scale labels), then the hands.
-// The scale's value range is 0..720 over 360 degrees (one step = 30 s of
-// minute-hand travel), so the hour hand moves between hour marks.
+// Layout, outside in:
+//   outer ring  - "12 3 6 9" numerals, bold hour marks at the other eight hours
+//   inner ring  - 60 fine minute ticks
+//   hands       - classic tall-case ("grandfather") style, drawn as filled polygons:
+//                 hour   = tapered wedge, open Breguet ring, spade tip
+//                 minute = long tapered wedge, lozenge, fine point near the edge
+//                 second = slim amber needle with a round counterweight
+// Ticks and hands are custom-drawn on one transparent object (DrawCb) that sits
+// above the numeral labels, so long hands pass over the numerals.
 #include "clock_face.h"
+
+#include <cmath>
 
 LV_FONT_DECLARE(font_puhui_basic_20_4);  // from the 78/xiaozhi-fonts component
 
 namespace {
 
-constexpr int kRange = 720;  // full dial
 const lv_font_t* const kNumeralFont = &font_puhui_basic_20_4;
 
 const lv_color_t kFaceBg = lv_color_hex(0x000000);
-const lv_color_t kMajorTick = lv_color_hex(0xF2F2F2);
-const lv_color_t kMinorTick = lv_color_hex(0x5A5A5A);
+const lv_color_t kHourMark = lv_color_hex(0xF2F2F2);
+const lv_color_t kMinuteTick = lv_color_hex(0x5A5A5A);
 const lv_color_t kNumeral = lv_color_hex(0xE6E6E6);
 const lv_color_t kHand = lv_color_hex(0xF2F2F2);
 const lv_color_t kSecondHand = lv_color_hex(0xFF8C1A);  // amber
 
-lv_obj_t* MakeHand(lv_obj_t* scale, int width, lv_color_t color) {
-    lv_obj_t* hand = lv_line_create(scale);
-    lv_obj_set_style_line_width(hand, width, 0);
-    lv_obj_set_style_line_color(hand, color, 0);
-    lv_obj_set_style_line_rounded(hand, true, 0);
-    return hand;
+constexpr float kPi = 3.14159265f;
+
+// Hand-local frame: t runs from the pivot outward along the hand, w is the
+// perpendicular offset (positive to the right of the hand's direction).
+struct Frame {
+    float cx, cy;  // pivot in screen coords
+    float ux, uy;  // unit vector along the hand
+    float nx, ny;  // unit perpendicular
+
+    Frame(float cx_, float cy_, float angle_deg) : cx(cx_), cy(cy_) {
+        const float a = angle_deg * kPi / 180.0f;  // 0 = 12 o'clock, clockwise
+        ux = std::sin(a);
+        uy = -std::cos(a);
+        nx = std::cos(a);
+        ny = std::sin(a);
+    }
+    lv_point_precise_t P(float t, float w) const {
+        lv_point_precise_t p;
+        p.x = static_cast<lv_value_precise_t>(std::lround(cx + t * ux + w * nx));
+        p.y = static_cast<lv_value_precise_t>(std::lround(cy + t * uy + w * ny));
+        return p;
+    }
+};
+
+void Tri(lv_layer_t* layer, lv_color_t c, lv_point_precise_t a, lv_point_precise_t b, lv_point_precise_t d) {
+    lv_draw_triangle_dsc_t dsc;
+    lv_draw_triangle_dsc_init(&dsc);
+    dsc.color = c;
+    dsc.opa = LV_OPA_COVER;
+    dsc.p[0] = a;
+    dsc.p[1] = b;
+    dsc.p[2] = d;
+    lv_draw_triangle(layer, &dsc);
+}
+
+// Quad from (t0, +-w0) to (t1, +-w1): a straight taper along the hand.
+void Taper(lv_layer_t* layer, const Frame& f, lv_color_t c, float t0, float w0, float t1, float w1) {
+    Tri(layer, c, f.P(t0, -w0), f.P(t0, w0), f.P(t1, w1));
+    Tri(layer, c, f.P(t0, -w0), f.P(t1, w1), f.P(t1, -w1));
+}
+
+// Diamond: point at t0, widest (+-w) at tm, point at t1.
+void Lozenge(lv_layer_t* layer, const Frame& f, lv_color_t c, float t0, float tm, float w, float t1) {
+    Tri(layer, c, f.P(t0, 0), f.P(tm, w), f.P(t1, 0));
+    Tri(layer, c, f.P(t0, 0), f.P(t1, 0), f.P(tm, -w));
+}
+
+void Ring(lv_layer_t* layer, lv_color_t c, lv_point_precise_t centre, int r, int width) {
+    lv_draw_arc_dsc_t dsc;
+    lv_draw_arc_dsc_init(&dsc);
+    dsc.color = c;
+    dsc.opa = LV_OPA_COVER;
+    dsc.width = width;
+    dsc.start_angle = 0;
+    dsc.end_angle = 360;
+    dsc.center.x = static_cast<int32_t>(centre.x);
+    dsc.center.y = static_cast<int32_t>(centre.y);
+    dsc.radius = static_cast<uint16_t>(r);
+    lv_draw_arc(layer, &dsc);
+}
+
+void Disc(lv_layer_t* layer, lv_color_t c, lv_point_precise_t centre, int r) {
+    Ring(layer, c, centre, r, r);  // an arc as wide as its radius is a filled disc
+}
+
+void Line(lv_layer_t* layer, lv_color_t c, int width, lv_point_precise_t a, lv_point_precise_t b) {
+    lv_draw_line_dsc_t dsc;
+    lv_draw_line_dsc_init(&dsc);
+    dsc.color = c;
+    dsc.opa = LV_OPA_COVER;
+    dsc.width = width;
+    dsc.p1 = a;
+    dsc.p2 = b;
+    dsc.round_start = 0;
+    dsc.round_end = 0;
+    lv_draw_line(layer, &dsc);
 }
 
 void MakeNumeral(lv_obj_t* parent, const char* text, int dx, int dy) {
@@ -39,6 +115,10 @@ void MakeNumeral(lv_obj_t* parent, const char* text, int dx, int dy) {
 }  // namespace
 
 ClockFace::ClockFace(lv_obj_t* parent, int size) {
+    radius_ = size / 2;
+    glyph_h_ = lv_font_get_line_height(kNumeralFont);
+    numeral_r_ = radius_ - glyph_h_ / 2 - 6;
+
     // Opaque black disc covering the whole round panel (and XiaoZhi's UI beneath it).
     root_ = lv_obj_create(parent);
     lv_obj_remove_style_all(root_);
@@ -49,60 +129,100 @@ ClockFace::ClockFace(lv_obj_t* parent, int size) {
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(root_, LV_OBJ_FLAG_CLICKABLE);  // let touches reach the board's handler
 
-    // Numerals: centred on a ring just inside the panel edge.
-    const int half = size / 2;
-    const int glyph_h = lv_font_get_line_height(kNumeralFont);
-    const int numeral_r = half - glyph_h / 2 - 6;
-    MakeNumeral(root_, "12", 0, -numeral_r);
-    MakeNumeral(root_, "3", numeral_r, 0);
-    MakeNumeral(root_, "6", 0, numeral_r);
-    MakeNumeral(root_, "9", -numeral_r, 0);
+    MakeNumeral(root_, "12", 0, -numeral_r_);
+    MakeNumeral(root_, "3", numeral_r_, 0);
+    MakeNumeral(root_, "6", 0, numeral_r_);
+    MakeNumeral(root_, "9", -numeral_r_, 0);
 
-    // Tick ring sits inside the numerals.
-    const int tick_r = numeral_r - glyph_h / 2 - 4;
-    scale_ = lv_scale_create(root_);
-    lv_obj_set_size(scale_, tick_r * 2, tick_r * 2);
-    lv_obj_center(scale_);
-    lv_scale_set_mode(scale_, LV_SCALE_MODE_ROUND_INNER);
-    lv_scale_set_range(scale_, 0, kRange);
-    lv_scale_set_angle_range(scale_, 360);
-    lv_scale_set_rotation(scale_, 270);  // 0 at 12 o'clock
-    lv_scale_set_total_tick_count(scale_, 61);
-    lv_scale_set_major_tick_every(scale_, 5);
-    lv_scale_set_label_show(scale_, false);
-    lv_obj_remove_flag(scale_, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(scale_, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(scale_, LV_OPA_TRANSP, LV_PART_MAIN);
-
-    // Hour ticks
-    lv_obj_set_style_length(scale_, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_line_width(scale_, 3, LV_PART_INDICATOR);
-    lv_obj_set_style_line_color(scale_, kMajorTick, LV_PART_INDICATOR);
-    // Minute ticks
-    lv_obj_set_style_length(scale_, 4, LV_PART_ITEMS);
-    lv_obj_set_style_line_width(scale_, 1, LV_PART_ITEMS);
-    lv_obj_set_style_line_color(scale_, kMinorTick, LV_PART_ITEMS);
-
-    hour_len_ = tick_r * 55 / 100;
-    minute_len_ = tick_r * 84 / 100;
-    second_len_ = tick_r * 92 / 100;
-    hour_hand_ = MakeHand(scale_, 7, kHand);
-    minute_hand_ = MakeHand(scale_, 4, kHand);
-    second_hand_ = MakeHand(scale_, 2, kSecondHand);
-
-    // Center cap over the hand pivots
-    cap_ = lv_obj_create(root_);
-    lv_obj_remove_style_all(cap_);
-    lv_obj_set_size(cap_, 12, 12);
-    lv_obj_center(cap_);
-    lv_obj_set_style_radius(cap_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(cap_, kSecondHand, 0);
-    lv_obj_set_style_bg_opa(cap_, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(cap_, kFaceBg, 0);
-    lv_obj_set_style_border_width(cap_, 2, 0);
-    lv_obj_remove_flag(cap_, LV_OBJ_FLAG_CLICKABLE);
+    // Transparent full-size object that draws ticks and hands on top of the numerals.
+    canvas_ = lv_obj_create(root_);
+    lv_obj_remove_style_all(canvas_);
+    lv_obj_set_size(canvas_, size, size);
+    lv_obj_center(canvas_);
+    lv_obj_remove_flag(canvas_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(canvas_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(canvas_, DrawCb, LV_EVENT_DRAW_MAIN, this);
 
     lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ClockFace::DrawCb(lv_event_t* e) {
+    auto* self = static_cast<ClockFace*>(lv_event_get_user_data(e));
+    lv_layer_t* layer = lv_event_get_layer(e);
+    lv_area_t area;
+    lv_obj_get_coords(self->canvas_, &area);
+    self->Draw(layer, area);
+}
+
+void ClockFace::Draw(lv_layer_t* layer, const lv_area_t& area) const {
+    const float cx = (area.x1 + area.x2 + 1) / 2.0f;
+    const float cy = (area.y1 + area.y2 + 1) / 2.0f;
+    const float R = static_cast<float>(radius_);
+
+    // Hour marks on the outer ring, level with the numerals (skip 12/3/6/9).
+    const float mark_outer = R - 3;
+    const float mark_inner = numeral_r_ - glyph_h_ / 2.0f + 1;
+    for (int h = 0; h < 12; ++h) {
+        if (h % 3 == 0) continue;
+        Frame f(cx, cy, h * 30.0f);
+        Taper(layer, f, kHourMark, mark_inner, 2.5f, mark_outer, 2.0f);
+    }
+
+    // Minute ticks on the inner ring.
+    const float tick_outer = numeral_r_ - glyph_h_ / 2.0f - 4;
+    const float tick_inner = tick_outer - 5;
+    for (int m = 0; m < 60; ++m) {
+        if (m % 5 == 0) continue;  // hours are marked on the outer ring
+        Frame f(cx, cy, m * 6.0f);
+        Line(layer, kMinuteTick, 1, f.P(tick_inner, 0), f.P(tick_outer, 0));
+    }
+    // Small dots at the hour positions on the inner ring keep its rhythm.
+    for (int h = 0; h < 12; ++h) {
+        Frame f(cx, cy, h * 30.0f);
+        Disc(layer, kMinuteTick, f.P(tick_outer - 2.5f, 0), 2);
+    }
+
+    if (second_ < 0) {
+        return;  // no time yet
+    }
+
+    // Hour hand: wedge, open ring, spade.
+    {
+        const float a = ((hour_ % 12) * 60 + minute_ + second_ / 60.0f) * 0.5f;  // 720 min = 360 deg
+        const float L = R * 0.56f;
+        const float ring_t = L * 0.66f;
+        const int ring_r = 6;
+        Frame f(cx, cy, a);
+        Taper(layer, f, kHand, -10, 4.5f, ring_t - ring_r + 1, 2.2f);
+        Ring(layer, kHand, f.P(ring_t, 0), ring_r, 3);
+        Taper(layer, f, kHand, ring_t + ring_r - 1, 1.6f, ring_t + ring_r + 3, 1.6f);   // neck
+        Lozenge(layer, f, kHand, ring_t + ring_r + 2, ring_t + ring_r + 8, 6.5f, L);    // spade
+    }
+
+    // Minute hand: tail, long wedge, lozenge, fine point near the edge.
+    {
+        const float a = (minute_ * 60 + second_) * 0.1f;  // 3600 s = 360 deg
+        const float L = R * 0.90f;
+        Frame f(cx, cy, a);
+        Taper(layer, f, kHand, -16, 2.5f, 0, 3.8f);                 // tail
+        Taper(layer, f, kHand, 0, 3.8f, L * 0.62f, 1.6f);           // shaft
+        Lozenge(layer, f, kHand, L * 0.60f, L * 0.70f, 5.0f, L * 0.80f);
+        Taper(layer, f, kHand, L * 0.78f, 1.5f, L, 0.4f);           // point
+    }
+
+    // Second hand: slim needle with counterweight.
+    {
+        const float a = second_ * 6.0f;
+        const float L = R * 0.93f;
+        Frame f(cx, cy, a);
+        Line(layer, kSecondHand, 2, f.P(-22, 0), f.P(L, 0));
+        Disc(layer, kSecondHand, f.P(-20, 0), 5);
+    }
+
+    // Centre cap.
+    const lv_point_precise_t c = Frame(cx, cy, 0).P(0, 0);
+    Disc(layer, kHand, c, 7);
+    Disc(layer, kSecondHand, c, 4);
 }
 
 void ClockFace::SetVisible(bool visible) {
@@ -122,15 +242,11 @@ bool ClockFace::IsVisible() const {
 }
 
 void ClockFace::SetTime(int hour, int minute, int second) {
-    if (second != last_second_) {
-        lv_scale_set_line_needle_value(scale_, second_hand_, second_len_, second * kRange / 60);
-        last_second_ = second;
+    if (hour == hour_ && minute == minute_ && second == second_) {
+        return;
     }
-    if (minute != last_minute_ || hour != last_hour_) {
-        // minute hand: 12 steps per minute-mark; hour hand: 60 steps per hour-mark
-        lv_scale_set_line_needle_value(scale_, minute_hand_, minute_len_, minute * 12);
-        lv_scale_set_line_needle_value(scale_, hour_hand_, hour_len_, (hour % 12) * 60 + minute);
-        last_minute_ = minute;
-        last_hour_ = hour;
-    }
+    hour_ = hour;
+    minute_ = minute;
+    second_ = second;
+    lv_obj_invalidate(canvas_);
 }

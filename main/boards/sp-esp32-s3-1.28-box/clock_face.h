@@ -14,23 +14,23 @@ public:
     void SetVisible(bool visible);
     bool IsVisible() const;
 
-    // 24 h local time. Cheap when nothing changed.
+    // 24 h local time. Redraws only when the second changes.
     void SetTime(int hour, int minute, int second);
 
 private:
-    lv_obj_t* root_ = nullptr;
-    lv_obj_t* scale_ = nullptr;
-    lv_obj_t* hour_hand_ = nullptr;
-    lv_obj_t* minute_hand_ = nullptr;
-    lv_obj_t* second_hand_ = nullptr;
-    lv_obj_t* cap_ = nullptr;
+    static void DrawCb(lv_event_t* e);
+    void Draw(lv_layer_t* layer, const lv_area_t& area) const;
 
-    int hour_len_ = 0;
-    int minute_len_ = 0;
-    int second_len_ = 0;
-    int last_hour_ = -1;
-    int last_minute_ = -1;
-    int last_second_ = -1;
+    lv_obj_t* root_ = nullptr;
+    lv_obj_t* canvas_ = nullptr;  // ticks + hands, custom-drawn, above the numerals
+
+    int radius_ = 0;          // panel radius
+    int numeral_r_ = 0;       // radius of the numeral ring centres
+    int glyph_h_ = 0;
+
+    int hour_ = -1;
+    int minute_ = -1;
+    int second_ = -1;
 };
 
 #endif  // CLOCK_FACE_H
