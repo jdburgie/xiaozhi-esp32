@@ -3,6 +3,7 @@
 #include "display/lcd_display.h"
 #include "application.h"
 #include "clock_face.h"
+#include "settings.h"
 
 #include <ctime>
 #include <memory>
@@ -440,6 +441,13 @@ public:
         InitializeGc9a01Display();
         InitializeButtons();
         if (GetBacklight()) {
+            // round-box-clock: default the clock to 50% backlight, once. After that the saved
+            // value wins, so a voice "set brightness" change still persists across reboots.
+            Settings clock_settings("clock", true);
+            if (clock_settings.GetInt("bl_default_v1", 0) == 0) {
+                GetBacklight()->SetBrightness(50, true);
+                clock_settings.SetInt("bl_default_v1", 1);
+            }
             GetBacklight()->RestoreBrightness();
         }
 

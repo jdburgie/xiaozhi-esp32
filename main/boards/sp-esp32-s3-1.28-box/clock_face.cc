@@ -27,13 +27,13 @@
 #include <cstring>
 #include <initializer_list>
 
-LV_FONT_DECLARE(font_cinzel_26);  // Cinzel (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
+LV_FONT_DECLARE(font_cinzel_22);  // Cinzel (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
 
 #define TAG "ClockFace"
 
 namespace {
 
-const lv_font_t* const kNumeralFont = &font_cinzel_26;
+const lv_font_t* const kNumeralFont = &font_cinzel_22;
 
 // Day runs [kDayStartHour, kNightStartHour). Fixed for now; sunrise/sunset is roadmap step 4.
 constexpr int kDayStartHour = 7;
@@ -269,7 +269,7 @@ void ClockFace::Render() {
     m.Flush(pixels_, p.hour_mark);
 
     // Minute ticks on the inner ring, just inside the numerals, with hour dots.
-    const float tick_outer = numeral_r_ - glyph_h_ / 2.0f - 5;
+    const float tick_outer = numeral_r_ - glyph_h_ / 2.0f - 12;  // comfortable gap below the numerals
     for (int i = 0; i < 60; ++i) {
         Frame f(c0, c0, i * 6.0f);
         if (i % 5 == 0) {
