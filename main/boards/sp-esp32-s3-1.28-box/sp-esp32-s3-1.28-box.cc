@@ -2,6 +2,10 @@
 #include "codecs/es8311_audio_codec.h"
 #include "display/lcd_display.h"
 #include "application.h"
+#include "clock_face.h"
+
+#include <ctime>
+#include <memory>
 #include "button.h"
 #include "config.h"
 #include "led/single_led.h"
@@ -121,6 +125,51 @@ public:
         // 由于屏幕是圆的，所以状态栏需要增加左右内边距
         lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES * 0.33, 0);
         lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES * 0.33, 0);
+
+        // round-box-clock: analog face over XiaoZhi's UI while idle
+        clock_face_ = std::make_unique<ClockFace>(lv_screen_active(), width);
+        if (low_battery_popup_ != nullptr) {
+            lv_obj_move_foreground(low_battery_popup_);
+        }
+    }
+
+    // Called once a second by the application's clock timer.
+    void UpdateStatusBar(bool update_all = false) override {
+        SpiLcdDisplay::UpdateStatusBar(update_all);
+        RefreshClockFace();
+    }
+
+    // Every device-state change calls SetStatus right after switching state,
+    // so this hides the face immediately when a conversation starts.
+    void SetStatus(const char* status) override {
+        SpiLcdDisplay::SetStatus(status);
+        RefreshClockFace();
+    }
+
+private:
+    std::unique_ptr<ClockFace> clock_face_;
+
+    void RefreshClockFace() {
+        if (!clock_face_) {
+            return;
+        }
+        const bool idle = Application::GetInstance().GetDeviceState() == kDeviceStateIdle;
+        time_t now = time(nullptr);
+        struct tm tm_now;
+        localtime_r(&now, &tm_now);
+        // XiaoZhi sets local time from the server at check-in; before that, don't show a bogus time.
+        const bool time_set = tm_now.tm_year >= 2025 - 1900;
+
+        DisplayLockGuard lock(this);
+        if (idle && time_set) {
+            clock_face_->SetTime(tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+            clock_face_->SetVisible(true);
+            if (low_battery_popup_ != nullptr) {
+                lv_obj_move_foreground(low_battery_popup_);
+            }
+        } else {
+            clock_face_->SetVisible(false);
+        }
     }
 };
 
@@ -142,10 +191,15 @@ private:
         rtc_gpio_set_direction(GPIO_NUM_3, RTC_GPIO_MODE_OUTPUT_ONLY);
         rtc_gpio_set_level(GPIO_NUM_3, 1);
 
-        power_save_timer_ = new PowerSaveTimer(-1, 60, 290);
+        // round-box-clock: stock was (-1, 60, 290) with brightness 1 in sleep, i.e. the screen goes
+        // effectively black after 60 s idle on battery and the board powers itself off at 290 s.
+        // A clock has to stay readable, so sleep only dims the backlight and auto-shutdown is off.
+        // Battery life drops accordingly; this is meant to live on USB power.
+        constexpr int kSleepBrightness = 12;  // percent
+        power_save_timer_ = new PowerSaveTimer(-1, 60, -1);
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
-            GetBacklight()->SetBrightness(1);
+            GetBacklight()->SetBrightness(kSleepBrightness);
         });
         power_save_timer_->OnExitSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(false);
