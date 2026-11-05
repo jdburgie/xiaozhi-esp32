@@ -1,23 +1,24 @@
 // round-box-clock: analog clock face. See clock_face.h.
 //
 // Layout, outside in:
-//   outer ring  - "12 3 6 9" numerals, bold hour marks at the other eight hours
-//   inner ring  - 60 fine minute ticks
+//   outer ring  - "12 3 6 9" numerals (Puhui 30), short slim marks at the other eight hours
+//   inner ring  - 48 fine minute ticks + hour dots
 //   hands       - classic tall-case ("grandfather") style, drawn as filled polygons:
-//                 hour   = tapered wedge, open Breguet ring, spade tip
-//                 minute = long tapered wedge, lozenge, fine point near the edge
-//                 second = slim amber needle with a round counterweight
+//                 hour   = ringed tail, wedge with thorns, Breguet ring, spade, needle tip
+//                 minute = ringed tail, wedge, double loop, thorns, lozenge, long needle
+//                 second = amber needle, diamond near the tip, hollow counterweight
 // Ticks and hands are custom-drawn on one transparent object (DrawCb) that sits
 // above the numeral labels, so long hands pass over the numerals.
 #include "clock_face.h"
 
 #include <cmath>
+#include <initializer_list>
 
-LV_FONT_DECLARE(font_puhui_basic_20_4);  // from the 78/xiaozhi-fonts component
+LV_FONT_DECLARE(font_puhui_basic_30_4);  // from the 78/xiaozhi-fonts component
 
 namespace {
 
-const lv_font_t* const kNumeralFont = &font_puhui_basic_20_4;
+const lv_font_t* const kNumeralFont = &font_puhui_basic_30_4;
 
 const lv_color_t kFaceBg = lv_color_hex(0x000000);
 const lv_color_t kHourMark = lv_color_hex(0xF2F2F2);
@@ -73,6 +74,13 @@ void Lozenge(lv_layer_t* layer, const Frame& f, lv_color_t c, float t0, float tm
     Tri(layer, c, f.P(t0, 0), f.P(t1, 0), f.P(tm, -w));
 }
 
+// A pair of thorns swept toward the tip, rooted on the shaft edge at t = a.
+void Thorns(lv_layer_t* layer, const Frame& f, lv_color_t c, float a, float root_w, float len, float span) {
+    for (float s : {-1.0f, 1.0f}) {
+        Tri(layer, c, f.P(a, s * root_w), f.P(a + len * 0.55f, s * root_w), f.P(a + len, s * span));
+    }
+}
+
 void Ring(lv_layer_t* layer, lv_color_t c, lv_point_precise_t centre, int r, int width) {
     lv_draw_arc_dsc_t dsc;
     lv_draw_arc_dsc_init(&dsc);
@@ -117,7 +125,9 @@ void MakeNumeral(lv_obj_t* parent, const char* text, int dx, int dy) {
 ClockFace::ClockFace(lv_obj_t* parent, int size) {
     radius_ = size / 2;
     glyph_h_ = lv_font_get_line_height(kNumeralFont);
-    numeral_r_ = radius_ - glyph_h_ / 2 - 6;
+    // Digits occupy roughly the middle 70% of the font's line height, so centre
+    // them closer to the edge than half a line height would suggest.
+    numeral_r_ = radius_ - glyph_h_ * 4 / 10 - 3;
 
     // Opaque black disc covering the whole round panel (and XiaoZhi's UI beneath it).
     root_ = lv_obj_create(parent);
@@ -159,17 +169,17 @@ void ClockFace::Draw(lv_layer_t* layer, const lv_area_t& area) const {
     const float cy = (area.y1 + area.y2 + 1) / 2.0f;
     const float R = static_cast<float>(radius_);
 
-    // Hour marks on the outer ring, level with the numerals (skip 12/3/6/9).
+    // Hour marks at the outer edge (skip 12/3/6/9): short and slim so the numerals dominate.
     const float mark_outer = R - 3;
-    const float mark_inner = numeral_r_ - glyph_h_ / 2.0f + 1;
+    const float mark_inner = R - 12;
     for (int h = 0; h < 12; ++h) {
         if (h % 3 == 0) continue;
         Frame f(cx, cy, h * 30.0f);
-        Taper(layer, f, kHourMark, mark_inner, 2.5f, mark_outer, 2.0f);
+        Taper(layer, f, kHourMark, mark_inner, 1.2f, mark_outer, 1.0f);
     }
 
-    // Minute ticks on the inner ring.
-    const float tick_outer = numeral_r_ - glyph_h_ / 2.0f - 4;
+    // Minute ticks on the inner ring, just inside the numerals.
+    const float tick_outer = numeral_r_ - glyph_h_ * 0.4f - 3;
     const float tick_inner = tick_outer - 5;
     for (int m = 0; m < 60; ++m) {
         if (m % 5 == 0) continue;  // hours are marked on the outer ring
@@ -186,37 +196,52 @@ void ClockFace::Draw(lv_layer_t* layer, const lv_area_t& area) const {
         return;  // no time yet
     }
 
-    // Hour hand: wedge, open ring, spade.
+    // Hour hand: ringed tail, wedge with thorns, Breguet ring, spade, needle tip.
     {
         const float a = ((hour_ % 12) * 60 + minute_ + second_ / 60.0f) * 0.5f;  // 720 min = 360 deg
-        const float L = R * 0.56f;
-        const float ring_t = L * 0.66f;
+        const float L = R * 0.62f;
         const int ring_r = 6;
+        const float ring_t = L * 0.50f;
+        const float spade_t0 = ring_t + ring_r + 2;
         Frame f(cx, cy, a);
-        Taper(layer, f, kHand, -10, 4.5f, ring_t - ring_r + 1, 2.2f);
-        Ring(layer, kHand, f.P(ring_t, 0), ring_r, 3);
-        Taper(layer, f, kHand, ring_t + ring_r - 1, 1.6f, ring_t + ring_r + 3, 1.6f);   // neck
-        Lozenge(layer, f, kHand, ring_t + ring_r + 2, ring_t + ring_r + 8, 6.5f, L);    // spade
+        Ring(layer, kHand, f.P(-11, 0), 4, 2);                                  // tail ring
+        Taper(layer, f, kHand, -8, 2.0f, 0, 4.2f);                              // tail neck
+        Taper(layer, f, kHand, 0, 4.2f, ring_t - ring_r + 1, 2.0f);             // wedge
+        Thorns(layer, f, kHand, ring_t * 0.42f, 2.6f, 9, 7.5f);
+        Ring(layer, kHand, f.P(ring_t, 0), ring_r, 3);                          // Breguet ring
+        Taper(layer, f, kHand, ring_t + ring_r - 1, 1.6f, spade_t0 + 1, 1.4f);  // neck
+        Lozenge(layer, f, kHand, spade_t0, spade_t0 + 5, 6.0f, spade_t0 + 12);  // spade
+        Taper(layer, f, kHand, spade_t0 + 11, 1.5f, L, 0.3f);                   // needle
     }
 
-    // Minute hand: tail, long wedge, lozenge, fine point near the edge.
+    // Minute hand: ringed tail, wedge, double loop, thorns, lozenge, long needle.
     {
         const float a = (minute_ * 60 + second_) * 0.1f;  // 3600 s = 360 deg
         const float L = R * 0.90f;
+        const int loop_r = 5;
+        const float loop1 = L * 0.34f;
+        const float loop2 = loop1 + 2 * loop_r - 1;
         Frame f(cx, cy, a);
-        Taper(layer, f, kHand, -16, 2.5f, 0, 3.8f);                 // tail
-        Taper(layer, f, kHand, 0, 3.8f, L * 0.62f, 1.6f);           // shaft
-        Lozenge(layer, f, kHand, L * 0.60f, L * 0.70f, 5.0f, L * 0.80f);
-        Taper(layer, f, kHand, L * 0.78f, 1.5f, L, 0.4f);           // point
+        Ring(layer, kHand, f.P(-15, 0), 4, 2);                                  // tail ring
+        Taper(layer, f, kHand, -12, 2.0f, 0, 3.6f);                             // tail neck
+        Taper(layer, f, kHand, 0, 3.6f, loop1 - loop_r + 1, 2.0f);              // wedge
+        Ring(layer, kHand, f.P(loop1, 0), loop_r, 2);                           // double loop
+        Ring(layer, kHand, f.P(loop2, 0), loop_r, 2);
+        Taper(layer, f, kHand, loop2 + loop_r - 1, 1.8f, L * 0.62f, 1.4f);      // shaft
+        Thorns(layer, f, kHand, L * 0.53f, 1.6f, 8, 5.5f);
+        Lozenge(layer, f, kHand, L * 0.61f, L * 0.665f, 4.5f, L * 0.72f);
+        Taper(layer, f, kHand, L * 0.71f, 1.3f, L, 0.3f);                       // needle
     }
 
-    // Second hand: slim needle with counterweight.
+    // Second hand: hollow counterweight, slim needle, small diamond near the tip.
     {
         const float a = second_ * 6.0f;
         const float L = R * 0.93f;
         Frame f(cx, cy, a);
-        Line(layer, kSecondHand, 2, f.P(-22, 0), f.P(L, 0));
-        Disc(layer, kSecondHand, f.P(-20, 0), 5);
+        Line(layer, kSecondHand, 2, f.P(-14, 0), f.P(L * 0.72f, 0));
+        Taper(layer, f, kSecondHand, L * 0.72f, 1.0f, L, 0.3f);
+        Lozenge(layer, f, kSecondHand, L * 0.66f, L * 0.71f, 3.0f, L * 0.76f);
+        Ring(layer, kSecondHand, f.P(-19, 0), 5, 2);
     }
 
     // Centre cap.
