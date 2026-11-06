@@ -475,7 +475,9 @@ esp_err_t FileHandler(httpd_req_t* req) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return Fail(req, HTTPD_404_NOT_FOUND, "not found");
     char etag[48];
-    snprintf(etag, sizeof(etag), "\"%ld-%lld\"", static_cast<long>(st.st_size), static_cast<long long>(st.st_mtime));
+    // newlib-nano printf has no %lld: keep both fields in unsigned long.
+    snprintf(etag, sizeof(etag), "\"%lu-%lu\"", static_cast<unsigned long>(st.st_size),
+             static_cast<unsigned long>(st.st_mtime));
     httpd_resp_set_hdr(req, "ETag", etag);
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");  // revalidate with the ETag
     char inm[48];
