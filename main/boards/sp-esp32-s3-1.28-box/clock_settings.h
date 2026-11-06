@@ -15,7 +15,12 @@ public:
         int day_start = 7;         // hour [0,23] when the day palette begins
         int night_start = 19;      // hour [0,23] when the night palette begins
         bool show_seconds = true;
+        int slide_secs = 10;       // slideshow interval, [kMinSlideSecs, kMaxSlideSecs]
+        bool slide_shuffle = false;
     };
+
+    static constexpr int kMinSlideSecs = 2;
+    static constexpr int kMaxSlideSecs = 3600;
 
     static ClockSettings& Get();
 

@@ -3,6 +3,8 @@
 #include "display/lcd_display.h"
 #include "application.h"
 #include "clock_face.h"
+#include "clock_overlay.h"
+#include "clock_slideshow.h"
 #include "clock_sd.h"
 #include "clock_web.h"
 #include "settings.h"
@@ -147,6 +149,7 @@ public:
     void SetStatus(const char* status) override {
         SpiLcdDisplay::SetStatus(status);
         RefreshClockFace();
+        clock_slideshow::OnDeviceStateChanged();  // hides pictures during a conversation
     }
 
 private:
@@ -165,7 +168,10 @@ private:
 
         DisplayLockGuard lock(this);
         if (idle && time_set) {
-            clock_face_->SetTime(tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+            // A picture covers the whole screen: skip the face's 1 Hz re-render underneath it.
+            if (!clock_overlay::IsShowing()) {
+                clock_face_->SetTime(tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+            }
             clock_face_->SetVisible(true);
             if (low_battery_popup_ != nullptr) {
                 lv_obj_move_foreground(low_battery_popup_);
@@ -298,6 +304,13 @@ private:
             // 只有短触才触发
             if (touch_duration < TOUCH_THRESHOLD_MS) {
                 auto& app = Application::GetInstance();
+                // round-box-clock: "Jarvis" starts conversations, so a tap while idle toggles the
+                // picture slideshow instead of opening the listening screen. In every other state
+                // (listening, speaking, setup) a tap keeps its stock meaning, e.g. ending a conversation.
+                if (app.GetDeviceState() == kDeviceStateIdle) {
+                    clock_slideshow::Toggle();
+                    return;
+                }
                 if (app.GetDeviceState() == kDeviceStateStarting &&
                     !WifiStation::GetInstance().IsConnected()) {
                     board->ResetWifiConfiguration();
@@ -459,6 +472,7 @@ public:
 
         // round-box-clock: microSD (read-only use) and the LAN settings page at roundclock.local
         clock_sd::Mount();
+        clock_slideshow::Init();
         clock_web::StartWhenNetworkReady();
     }
 

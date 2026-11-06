@@ -3,6 +3,7 @@
 #ifndef CLOCK_SD_H
 #define CLOCK_SD_H
 
+#include <shared_mutex>
 #include <string>
 
 namespace clock_sd {
@@ -14,6 +15,10 @@ bool Mount();
 bool IsMounted();
 // JSON object describing the card (or the failure), for the status page.
 std::string StatusJson();
+
+// Guards file lifetime on the card: hold it shared while a file is open for reading,
+// exclusive while deleting or renaming (FatFs must not delete a file that is open).
+std::shared_mutex& FileMutex();
 
 }  // namespace clock_sd
 

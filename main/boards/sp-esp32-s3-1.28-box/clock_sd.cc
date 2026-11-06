@@ -185,6 +185,11 @@ bool Mount() {
 
 bool IsMounted() { return card_ != nullptr; }
 
+std::shared_mutex& FileMutex() {
+    static std::shared_mutex m;
+    return m;
+}
+
 std::string StatusJson() {
     if (summary_json_.empty()) {
         return "{\"mounted\":false,\"error\":\"not attempted\"}";

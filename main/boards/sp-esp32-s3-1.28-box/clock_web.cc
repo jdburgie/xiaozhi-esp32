@@ -6,6 +6,7 @@
 #include "clock_overlay.h"
 #include "clock_sd.h"
 #include "clock_settings.h"
+#include "clock_slideshow.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -26,6 +27,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
 
 #define TAG "ClockWeb"
@@ -40,10 +43,10 @@ const char kIndexHtml[] = R"HTML(<!doctype html>
 <title>Round Box Clock</title>
 <style>
 /* Three Oak Woods palette (threeoakwoods-com): forest, deep, paper, ink, gold */
-:root{--bg:#f5f1e6;--card:#fffefb;--ink:#2b3a33;--muted:#58665e;--line:#e3d9c3;--accent:#2c654b;--accent-hover:#214d3b;--gold:#8a5a12;--pale:#eaf0e8}
-@media (prefers-color-scheme:dark){:root{--bg:#1c2621;--card:#24322c;--ink:#f0ece0;--muted:#a9b5ad;--line:#35473e;--accent:#4f9a76;--accent-hover:#5fae88;--gold:#e6c692;--pale:#2b3d34}}
+:root{--bg:#f5f1e6;--card:#fffefb;--ink:#2b3a33;--muted:#58665e;--line:#e3d9c3;--accent:#2c654b;--accent-hover:#214d3b;--gold:#8a5a12;--pale:#eaf0e8;--danger:#9b2c22}
+@media (prefers-color-scheme:dark){:root{--bg:#1c2621;--card:#24322c;--ink:#f0ece0;--muted:#a9b5ad;--line:#35473e;--accent:#4f9a76;--accent-hover:#5fae88;--gold:#e6c692;--pale:#2b3d34;--danger:#e0806f}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 "Segoe UI",system-ui,sans-serif}
-main{max-width:560px;margin:0 auto;padding:22px 16px 48px}
+main{max-width:620px;margin:0 auto;padding:22px 16px 48px}
 h1{font:800 1.75rem/1.18 Nunito,"Segoe UI",system-ui,sans-serif;letter-spacing:-.02em;margin:.2em 0 .1em}h1 small{display:block;font:600 .85rem "Segoe UI",system-ui,sans-serif;color:var(--muted);letter-spacing:0;margin-top:4px}
 .eyebrow{color:var(--gold);font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;margin:0 0 6px}
 section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:16px 0}
@@ -58,12 +61,25 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent)}
 .dial span{font-size:.7rem;display:block;text-align:center;letter-spacing:.04em;opacity:.8}
 button{font:inherit;font-weight:600;border:1px solid var(--accent);border-radius:8px;padding:9px 18px;background:var(--accent);color:#fff;cursor:pointer;transition:background .15s}
-button:hover{background:var(--accent-hover)}
+button:hover{background:var(--accent-hover)}button:disabled{opacity:.5;cursor:default}
 button.ghost{background:none;color:var(--accent);border-color:var(--line)}button.ghost:hover{background:var(--pale)}
+button.sm{padding:4px 10px;font-size:.82rem}button.del{color:var(--danger)}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:12px}
+.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.actions.left{justify-content:flex-start}
 #msg{min-height:1.3em;color:var(--muted);font-size:.9rem;text-align:right}
+.note{color:var(--muted);font-size:.86rem;margin:6px 0 0}
 dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.92rem}dt{color:var(--muted)}dd{margin:0;word-break:break-word}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:16px;text-align:center;transition:background .15s,border-color .15s}
+.drop.over{background:var(--pale);border-color:var(--accent)}.drop small{display:block;color:var(--muted);margin-top:6px}
+#up{min-height:1.3em;color:var(--muted);font-size:.9rem;margin:8px 0 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:14px;margin-top:14px}
+.pic{text-align:center;font-size:.8rem;color:var(--muted)}
+.pic canvas,.pic .ph{width:100%;aspect-ratio:1;border-radius:50%;background:#111;display:block;border:3px solid var(--line)}
+.pic.on canvas{border-color:var(--accent)}
+.pic .ph{display:grid;place-items:center;color:#888;font-size:.75rem;padding:12px}
+.pic .nm{margin:4px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pic .b{display:flex;gap:6px;justify-content:center}
 </style></head><body><main>
 <p class="eyebrow">Three Oak Woods</p>
 <h1>Round Box Clock<small id="sub">roundclock.local</small></h1>
@@ -84,10 +100,22 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.
 <div class="row"><label for="bl">Brightness <b id="blv"></b></label><input type="range" id="bl" min="5" max="100" step="5"></div>
 </section>
 
+<section><h2>Slideshow</h2>
+<div class="row"><label for="ss">Change picture every</label><select id="ss"></select></div>
+<div class="row"><label for="shuf">Shuffle</label><input type="checkbox" id="shuf"></div>
+<div class="row"><label id="sst">Stopped</label><span class="actions" style="margin:0"><button class="ghost sm" id="ssStart">Start</button><button class="ghost sm" id="ssNext">Next</button><button class="ghost sm" id="ssStop">Stop</button></span></div>
+<p class="note">Tap the clock to start or stop the slideshow. Say "Jarvis" to talk; pictures step aside during a conversation and come back after.</p>
+</section>
+
 <div class="actions"><button class="ghost" id="reset">Defaults</button><button id="save">Save</button></div>
 <div id="msg"></div>
 
-<section><h2>Pictures on the SD card</h2><div id="imgs"><small>Loading…</small></div></section>
+<section><h2>Pictures</h2>
+<div class="drop" id="drop"><input type="file" id="file" accept="image/*" multiple hidden>
+<button id="pick">Add pictures…</button><small>or drop them here. Each is cropped to fill the round screen.</small></div>
+<div id="up"></div>
+<div class="grid" id="grid"><small>Loading…</small></div>
+</section>
 
 <section><h2>Status</h2><dl id="st"><dt>Loading</dt><dd>…</dd></dl></section>
 </main>
@@ -95,31 +123,106 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.
 const $=id=>document.getElementById(id);
 const hex=n=>'#'+n.toString(16).padStart(6,'0');
 const num=s=>parseInt(s.slice(1),16);
-const DEF={face:0xCBB07E,ink:0x1C1A18,day_start:7,night_start:19,show_seconds:true,brightness:50};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const S=240,BYTES=S*S*2;
+const DEF={face:0xCBB07E,ink:0x1C1A18,day_start:7,night_start:19,show_seconds:true,brightness:50,slide_secs:10,slide_shuffle:false};
+const INTERVALS=[3,5,10,15,20,30,45,60,120,300,600,1800,3600];
+const fmtSecs=s=>s<60?s+' seconds':s<3600?(s/60)+(s==60?' minute':' minutes'):(s/3600)+(s==3600?' hour':' hours');
 for(const id of['ds','ns'])for(let h=0;h<24;h++)$(id).add(new Option(String(h).padStart(2,'0')+':00',h));
+for(const s of INTERVALS)$('ss').add(new Option(fmtSecs(s),s));
+function setInterval_(v){if(![...$('ss').options].some(o=>+o.value==v))$('ss').add(new Option(fmtSecs(v),v));$('ss').value=v;}
 function preview(){const f=$('face').value,i=$('ink').value;
  Object.assign($('pvDay').style,{background:f,color:i});Object.assign($('pvNight').style,{background:'#000',color:f});
  $('blv').textContent=$('bl').value+'%';}
 function fill(s){$('face').value=hex(s.face);$('ink').value=hex(s.ink);$('secs').checked=s.show_seconds;
- $('ds').value=s.day_start;$('ns').value=s.night_start;$('bl').value=s.brightness;preview();}
+ $('ds').value=s.day_start;$('ns').value=s.night_start;$('bl').value=s.brightness;
+ setInterval_(s.slide_secs??10);$('shuf').checked=!!s.slide_shuffle;preview();}
 async function load(){const r=await fetch('/api/settings');fill(await r.json());}
 async function save(){const body={face:num($('face').value),ink:num($('ink').value),show_seconds:$('secs').checked,
- day_start:+$('ds').value,night_start:+$('ns').value,brightness:+$('bl').value};
+ day_start:+$('ds').value,night_start:+$('ns').value,brightness:+$('bl').value,slide_secs:+$('ss').value,slide_shuffle:$('shuf').checked};
  $('msg').textContent='Saving…';
  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  $('msg').textContent=r.ok?'Saved. The clock updates within a second.':'Not saved: '+await r.text();}
 const fmtUp=s=>{const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+h+'h '+m+'m';};
+let current='';
 async function status(){try{const s=await(await fetch('/api/status')).json();
  const sd=s.sd.mounted?`${s.sd.name} · ${s.sd.size_mb} MB ${s.sd.type}`+(s.sd.fs_free_mb!=null?` · ${s.sd.fs_free_mb} MB free`:''):'not mounted ('+s.sd.error+')';
  const rows=[['Firmware',s.version+' · built '+s.built],['IDF',s.idf],['Uptime',fmtUp(s.uptime_s)],['IP',s.ip],['Wi-Fi',s.rssi+' dBm'],
   ['Battery',s.battery_level<0?'n/a':s.battery_level+'%'+(s.charging?' (charging)':'')],['Memory',`${s.heap_kb} KB internal · ${s.psram_kb} KB PSRAM free`],['SD card',sd]];
- if(s.sd.mounted&&s.sd.root)rows.push(['SD files',s.sd.root.map(e=>e.name+(e.dir?'/':'')).join(', ')||'(empty)']);
- $('st').innerHTML=rows.map(([k,v])=>`<dt>${k}</dt><dd>${String(v).replace(/</g,'&lt;')}</dd>`).join('');}catch(e){}}
+ $('st').innerHTML=rows.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+ const ss=s.slideshow||{};current=ss.active?ss.current||'':'';
+ $('sst').textContent=ss.active?('Running'+(ss.current?' · '+ss.current:'')):'Stopped';
+ document.querySelectorAll('.pic').forEach(p=>p.classList.toggle('on',p.dataset.n===current));}catch(e){}}
 ['face','ink','bl'].forEach(id=>$(id).addEventListener('input',preview));
 $('save').onclick=save;$('reset').onclick=()=>{fill(DEF);$('msg').textContent='Defaults loaded. Press Save to apply.';};
-async function images(){try{const r=await(await fetch('/api/sd/images')).json();const shown=r.images.filter(i=>i.name.endsWith('.rgb565'));
- $('imgs').innerHTML=shown.length?shown.map(i=>`<div class="row"><label>${i.name.replace(/</g,'&lt;')}</label><button class="ghost" data-n="${encodeURIComponent(i.name)}">Show 10 s</button></div>`).join(''):'<small>No .rgb565 pictures in /images yet.</small>';
- $('imgs').querySelectorAll('button').forEach(b=>b.onclick=async()=>{const r=await fetch('/api/display/show?secs=10&name='+b.dataset.n,{method:'POST'});$('msg').textContent=r.ok?'Showing on the clock for 10 s.':'Show failed: '+await r.text();});}catch(e){$('imgs').innerHTML='<small>SD card not available.</small>';}}
+async function slideshow(action){const r=await fetch('/api/slideshow?action='+action,{method:'POST'});
+ $('msg').textContent=r.ok?'':'Slideshow: '+await r.text();setTimeout(status,700);}
+$('ssStart').onclick=()=>slideshow('start');$('ssNext').onclick=()=>slideshow('next');$('ssStop').onclick=()=>slideshow('stop');
+
+// ---- pictures: decode RGB565 for thumbnails, convert uploads in the browser
+function draw565(bytes,cv){cv.width=cv.height=S;const g=cv.getContext('2d'),im=g.createImageData(S,S),d=im.data;
+ for(let i=0,o=0;i<BYTES;i+=2,o+=4){const v=bytes[i]|bytes[i+1]<<8;d[o]=(v>>11)*255/31;d[o+1]=(v>>5&63)*255/63;d[o+2]=(v&31)*255/31;d[o+3]=255;}
+ g.putImageData(im,0,0);}
+async function decode(file){
+ try{return await createImageBitmap(file,{imageOrientation:'from-image'});}catch(e){}
+ return await new Promise((res,rej)=>{const i=new Image(),u=URL.createObjectURL(file);
+  i.onload=()=>{URL.revokeObjectURL(u);res(i);};i.onerror=()=>{URL.revokeObjectURL(u);rej(new Error("this browser can't open it (HEIC? export as JPEG)"));};i.src=u;});}
+// Cover-crop to 240x240, then Floyd-Steinberg dither to RGB565 little-endian (LVGL native).
+function toRgb565(img){const c=document.createElement('canvas');c.width=c.height=S;const g=c.getContext('2d');
+ const w=img.width,h=img.height,k=Math.max(S/w,S/h),dw=w*k,dh=h*k;
+ g.imageSmoothingEnabled=true;g.imageSmoothingQuality='high';g.fillStyle='#000';g.fillRect(0,0,S,S);
+ g.drawImage(img,(S-dw)/2,(S-dh)/2,dw,dh);
+ const d=g.getImageData(0,0,S,S).data,f=new Float32Array(S*S*3),out=new Uint8Array(BYTES),L=[31,63,31],q=[0,0,0];
+ for(let i=0,j=0;i<d.length;i+=4,j+=3){f[j]=d[i];f[j+1]=d[i+1];f[j+2]=d[i+2];}
+ for(let y=0;y<S;y++)for(let x=0;x<S;x++){const p=(y*S+x)*3;
+  for(let ch=0;ch<3;ch++){const v=Math.min(255,Math.max(0,f[p+ch])),l=L[ch],qv=Math.round(v*l/255),e=v-qv*255/l;q[ch]=qv;
+   if(x+1<S)f[p+3+ch]+=e*7/16;
+   if(y+1<S){const n=p+S*3+ch;if(x>0)f[n-3]+=e*3/16;f[n]+=e*5/16;if(x+1<S)f[n+3]+=e/16;}}
+  const v=q[0]<<11|q[1]<<5|q[2],o=(y*S+x)*2;out[o]=v&255;out[o+1]=v>>8;}
+ return out;}
+function nameFor(file,taken){let b=file.name.replace(/\.[^.]*$/,'').toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^[-_]+|[-_]+$/g,'').slice(0,28)||'picture';
+ let n=b+'.rgb565',i=2;while(taken.has(n))n=b+'-'+(i++)+'.rgb565';return n;}
+
+let names=[];const cache=new Map();
+function card(img){const n=img.name,ok=n.endsWith('.rgb565')&&img.bytes===BYTES;
+ const el=document.createElement('div');el.className='pic'+(n===current?' on':'');el.dataset.n=n;
+ el.innerHTML=(ok?'<canvas></canvas>':'<div class="ph">not a clock picture</div>')+`<div class="nm" title="${esc(n)}">${esc(n)}</div><div class="b">`+
+  (ok?'<button class="ghost sm" data-a="show">Show</button>':'')+'<button class="ghost sm del" data-a="del">Delete</button></div>';
+ el.querySelectorAll('button').forEach(b=>b.onclick=()=>b.dataset.a==='show'?show(n):del(n,el));
+ if(ok&&cache.has(n))draw565(cache.get(n),el.querySelector('canvas'));
+ return el;}
+async function thumbs(){for(const el of document.querySelectorAll('.pic')){const n=el.dataset.n,cv=el.querySelector('canvas');
+ if(!cv||cache.has(n))continue;
+ try{const r=await fetch('/api/sd/file?name='+encodeURIComponent(n));if(!r.ok)continue;const b=new Uint8Array(await r.arrayBuffer());
+  if(b.length===BYTES){cache.set(n,b);draw565(b,cv);}}catch(e){}}}
+async function images(){try{const r=await fetch('/api/sd/images');if(!r.ok)throw 0;const j=await r.json();
+ const list=j.images.sort((a,b)=>a.name.localeCompare(b.name));names=list.map(i=>i.name);
+ const g=$('grid');g.innerHTML='';
+ if(!list.length)g.innerHTML='<small>No pictures yet. Add some above.</small>';
+ list.forEach(i=>g.appendChild(card(i)));thumbs();}catch(e){$('grid').innerHTML='<small>SD card not available.</small>';}}
+async function show(n){const r=await fetch('/api/display/show?secs=10&name='+encodeURIComponent(n),{method:'POST'});
+ $('up').textContent=r.ok?`Showing ${n} on the clock for 10 s.`:'Show failed: '+await r.text();}
+async function del(n,el){if(!confirm(`Delete ${n} from the SD card?`))return;
+ const r=await fetch('/api/sd/delete?name='+encodeURIComponent(n),{method:'POST'});
+ if(r.ok){cache.delete(n);el.remove();names=names.filter(x=>x!==n);$('up').textContent=`Deleted ${n}.`;
+  if(!names.length)$('grid').innerHTML='<small>No pictures yet. Add some above.</small>';}
+ else $('up').textContent='Delete failed: '+await r.text();}
+let busy=false;
+async function addFiles(files){files=[...files].filter(f=>f.type.startsWith('image/')||/\.(heic|heif|jpe?g|png|gif|webp|bmp|avif)$/i.test(f.name));
+ if(!files.length||busy)return;busy=true;$('pick').disabled=true;
+ const taken=new Set(names);let done=0,failed=[];
+ for(const [k,f] of files.entries()){const tag=`${k+1}/${files.length}`;
+  try{$('up').textContent=`Converting ${tag}: ${f.name}…`;const bytes=toRgb565(await decode(f));
+   const n=nameFor(f,taken);taken.add(n);$('up').textContent=`Uploading ${tag}: ${n}…`;
+   const r=await fetch('/api/sd/upload?name='+encodeURIComponent(n),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:bytes});
+   if(!r.ok)throw new Error(await r.text());
+   cache.set(n,bytes);done++;}catch(e){failed.push(`${f.name} (${e.message||e})`);}}
+ $('up').textContent=`Added ${done} of ${files.length}.`+(failed.length?' Failed: '+failed.join('; '):'');
+ busy=false;$('pick').disabled=false;$('file').value='';images();}
+$('pick').onclick=()=>$('file').click();$('file').onchange=e=>addFiles(e.target.files);
+const dz=$('drop');['dragenter','dragover'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.add('over');}));
+['dragleave','drop'].forEach(t=>dz.addEventListener(t,e=>{e.preventDefault();dz.classList.remove('over');}));
+dz.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
 load();status();images();setInterval(status,5000);
 </script></body></html>)HTML";
 
@@ -153,6 +256,8 @@ esp_err_t GetSettingsHandler(httpd_req_t* req) {
     cJSON_AddNumberToObject(root, "night_start", v.night_start);
     cJSON_AddBoolToObject(root, "show_seconds", v.show_seconds);
     cJSON_AddNumberToObject(root, "brightness", CurrentBrightness());
+    cJSON_AddNumberToObject(root, "slide_secs", v.slide_secs);
+    cJSON_AddBoolToObject(root, "slide_shuffle", v.slide_shuffle);
     return SendJson(req, root);
 }
 
@@ -189,8 +294,11 @@ esp_err_t PostSettingsHandler(httpd_req_t* req) {
     get_int("day_start", v.day_start);
     get_int("night_start", v.night_start);
     get_int("brightness", brightness);
+    get_int("slide_secs", v.slide_secs);
     cJSON* secs = cJSON_GetObjectItem(root, "show_seconds");
     if (cJSON_IsBool(secs)) v.show_seconds = cJSON_IsTrue(secs);
+    cJSON* shuffle = cJSON_GetObjectItem(root, "slide_shuffle");
+    if (cJSON_IsBool(shuffle)) v.slide_shuffle = cJSON_IsTrue(shuffle);
     cJSON_Delete(root);
 
     if (face < 0 || ink < 0) {
@@ -200,7 +308,7 @@ esp_err_t PostSettingsHandler(httpd_req_t* req) {
     v.face = static_cast<uint32_t>(face);
     v.ink = static_cast<uint32_t>(ink);
     if (!ClockSettings::Get().Save(v)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "out of range (hours 0-23 and different; colours 000000-FFFFFF)");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "out of range (hours 0-23 and different; colours 000000-FFFFFF; slideshow 2-3600 s)");
         return ESP_FAIL;
     }
     if (brightness >= 5 && brightness <= 100) {
@@ -208,9 +316,10 @@ esp_err_t PostSettingsHandler(httpd_req_t* req) {
             bl->SetBrightness(static_cast<uint8_t>(brightness), true);  // persisted, like the voice tool
         }
     }
-    ESP_LOGI(TAG, "settings saved: face %06lx ink %06lx day %d night %d secs %d bl %d",
+    ESP_LOGI(TAG, "settings saved: face %06lx ink %06lx day %d night %d secs %d bl %d slide %d s%s",
              static_cast<unsigned long>(v.face), static_cast<unsigned long>(v.ink),
-             v.day_start, v.night_start, v.show_seconds, brightness);
+             v.day_start, v.night_start, v.show_seconds, brightness, v.slide_secs,
+             v.slide_shuffle ? " shuffled" : "");
     return GetSettingsHandler(req);
 }
 
@@ -246,11 +355,15 @@ esp_err_t StatusHandler(httpd_req_t* req) {
 
     cJSON* sd = cJSON_Parse(clock_sd::StatusJson().c_str());
     cJSON_AddItemToObject(root, "sd", sd ? sd : cJSON_CreateObject());
+
+    cJSON* ss = cJSON_AddObjectToObject(root, "slideshow");
+    cJSON_AddBoolToObject(ss, "active", clock_slideshow::IsActive());
+    cJSON_AddStringToObject(ss, "current", clock_slideshow::Current().c_str());
     return SendJson(req, root);
 }
 
 // ---------------------------------------------------------------- SD images
-constexpr const char* kImageDir = "/sdcard/images";
+constexpr const char* kImageDir = clock_slideshow::kImageDir;
 constexpr size_t kMaxUpload = 2 * 1024 * 1024;
 
 bool ValidImageName(const std::string& n) {
@@ -303,8 +416,16 @@ esp_err_t UploadHandler(httpd_req_t* req) {
         remove(tmp.c_str());
         return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "upload interrupted or write failed");
     }
-    remove(path.c_str());
-    rename(tmp.c_str(), path.c_str());
+    int moved;
+    {
+        std::unique_lock<std::shared_mutex> files(clock_sd::FileMutex());  // nobody has `path` open
+        remove(path.c_str());
+        moved = rename(tmp.c_str(), path.c_str());
+    }
+    if (moved != 0) {
+        remove(tmp.c_str());
+        return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not rename upload");
+    }
     ESP_LOGI(TAG, "uploaded %s (%u bytes)", path.c_str(), static_cast<unsigned>(req->content_len));
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "saved", path.c_str());
@@ -340,6 +461,79 @@ esp_err_t ShowHandler(httpd_req_t* req) {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "showing", name.c_str());
     cJSON_AddNumberToObject(root, "secs", secs);
+    return SendJson(req, root);
+}
+
+// GET /api/sd/file?name=  Streams a picture (the page decodes .rgb565 for thumbnails).
+esp_err_t FileHandler(httpd_req_t* req) {
+    if (!clock_sd::IsMounted()) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card not mounted");
+    const std::string name = QueryParam(req, "name");
+    if (!ValidImageName(name)) return Fail(req, HTTPD_400_BAD_REQUEST, "bad name");
+    const std::string path = std::string(kImageDir) + "/" + name;
+
+    std::shared_lock<std::shared_mutex> files(clock_sd::FileMutex());
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return Fail(req, HTTPD_404_NOT_FOUND, "not found");
+    char etag[48];
+    snprintf(etag, sizeof(etag), "\"%ld-%lld\"", static_cast<long>(st.st_size), static_cast<long long>(st.st_mtime));
+    httpd_resp_set_hdr(req, "ETag", etag);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");  // revalidate with the ETag
+    char inm[48];
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm, sizeof(inm)) == ESP_OK && strcmp(inm, etag) == 0) {
+        httpd_resp_set_status(req, "304 Not Modified");
+        return httpd_resp_send(req, nullptr, 0);
+    }
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "open failed");
+    const char* type = "application/octet-stream";
+    if (name.size() > 4) {
+        const std::string ext = name.substr(name.rfind('.'));
+        if (ext == ".png") type = "image/png";
+        else if (ext == ".jpg") type = "image/jpeg";
+        else if (ext == ".bmp") type = "image/bmp";
+    }
+    httpd_resp_set_type(req, type);
+    char* buf = static_cast<char*>(malloc(4096));
+    esp_err_t err = buf ? ESP_OK : ESP_ERR_NO_MEM;
+    while (err == ESP_OK) {
+        const size_t n = fread(buf, 1, 4096, f);
+        if (n == 0) break;
+        err = httpd_resp_send_chunk(req, buf, n);
+    }
+    free(buf);
+    fclose(f);
+    if (err != ESP_OK) return err;  // client gone; httpd closes the socket
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+// POST /api/sd/delete?name=
+esp_err_t DeleteHandler(httpd_req_t* req) {
+    if (!clock_sd::IsMounted()) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card not mounted");
+    const std::string name = QueryParam(req, "name");
+    if (!ValidImageName(name)) return Fail(req, HTTPD_400_BAD_REQUEST, "bad name");
+    const std::string path = std::string(kImageDir) + "/" + name;
+    int r;
+    {
+        std::unique_lock<std::shared_mutex> files(clock_sd::FileMutex());  // waits for readers
+        r = remove(path.c_str());
+    }
+    if (r != 0) return Fail(req, HTTPD_404_NOT_FOUND, "not found");
+    ESP_LOGI(TAG, "deleted %s", path.c_str());
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "deleted", name.c_str());
+    return SendJson(req, root);
+}
+
+// POST /api/slideshow?action=start|stop|toggle|next
+esp_err_t SlideshowHandler(httpd_req_t* req) {
+    const std::string action = QueryParam(req, "action");
+    if (action == "start") clock_slideshow::Start();
+    else if (action == "stop") clock_slideshow::Stop();
+    else if (action == "toggle") clock_slideshow::Toggle();
+    else if (action == "next") clock_slideshow::Next();
+    else return Fail(req, HTTPD_400_BAD_REQUEST, "action: start, stop, toggle or next");
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "action", action.c_str());
     return SendJson(req, root);
 }
 
@@ -380,9 +574,14 @@ void StartServices() {
         {.uri = "/api/sd/upload", .method = HTTP_POST, .handler = UploadHandler, .user_ctx = nullptr},
         {.uri = "/api/sd/images", .method = HTTP_GET, .handler = ListImagesHandler, .user_ctx = nullptr},
         {.uri = "/api/display/show", .method = HTTP_POST, .handler = ShowHandler, .user_ctx = nullptr},
+        {.uri = "/api/sd/file", .method = HTTP_GET, .handler = FileHandler, .user_ctx = nullptr},
+        {.uri = "/api/sd/delete", .method = HTTP_POST, .handler = DeleteHandler, .user_ctx = nullptr},
+        {.uri = "/api/slideshow", .method = HTTP_POST, .handler = SlideshowHandler, .user_ctx = nullptr},
     };
     for (const auto& u : uris) {
-        httpd_register_uri_handler(server, &u);
+        if (httpd_register_uri_handler(server, &u) != ESP_OK) {
+            ESP_LOGE(TAG, "could not register %s", u.uri);
+        }
     }
     ESP_LOGI(TAG, "web settings at http://%s.local/", kHostname);
 }
