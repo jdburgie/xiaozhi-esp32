@@ -558,6 +558,25 @@ esp_err_t ChimeRingHandler(httpd_req_t* req) {
     return SendJson(req, root);
 }
 
+// POST /api/chime/preview  body = OGG/Opus clip (<= 128 KB). Plays once; nothing is stored.
+esp_err_t ChimePreviewHandler(httpd_req_t* req) {
+    constexpr size_t kMax = 128 * 1024;
+    if (req->content_len < 64 || req->content_len > kMax) return Fail(req, HTTPD_400_BAD_REQUEST, "OGG clip, 64 B to 128 KB");
+    std::string clip(req->content_len, '\0');
+    size_t got = 0;
+    while (got < clip.size()) {
+        int r = httpd_req_recv(req, clip.data() + got, clip.size() - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) return Fail(req, HTTPD_400_BAD_REQUEST, "read failed");
+        got += r;
+    }
+    if (clip.compare(0, 4, "OggS") != 0) return Fail(req, HTTPD_400_BAD_REQUEST, "not an OGG file");
+    if (!clock_chime::PlayPreview(std::move(clip))) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "busy: a preview is still queued");
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "queued", true);
+    return SendJson(req, root);
+}
+
 // POST /api/slideshow?action=start|stop|toggle|next
 esp_err_t SlideshowHandler(httpd_req_t* req) {
     const std::string action = QueryParam(req, "action");
@@ -592,7 +611,7 @@ void StartServices() {
     config.ctrl_port = 32769;      // keep clear of any other httpd instance's default ctrl port
     config.stack_size = 6144;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;  // registration failures are logged below
     config.recv_wait_timeout = 15;  // uploads
     httpd_handle_t server = nullptr;
     err = httpd_start(&server, &config);
@@ -612,6 +631,7 @@ void StartServices() {
         {.uri = "/api/sd/delete", .method = HTTP_POST, .handler = DeleteHandler, .user_ctx = nullptr},
         {.uri = "/api/slideshow", .method = HTTP_POST, .handler = SlideshowHandler, .user_ctx = nullptr},
         {.uri = "/api/chime/ring", .method = HTTP_POST, .handler = ChimeRingHandler, .user_ctx = nullptr},
+        {.uri = "/api/chime/preview", .method = HTTP_POST, .handler = ChimePreviewHandler, .user_ctx = nullptr},
     };
     for (const auto& u : uris) {
         if (httpd_register_uri_handler(server, &u) != ESP_OK) {

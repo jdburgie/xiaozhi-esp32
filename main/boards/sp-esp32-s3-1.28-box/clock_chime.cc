@@ -10,6 +10,8 @@
 
 #include <atomic>
 #include <ctime>
+#include <mutex>
+#include <string>
 #include <string_view>
 
 #define TAG "ClockChime"
@@ -43,6 +45,9 @@ std::string_view Sound(int bells) {
 }
 
 std::atomic<int> pending_ring_{-1};  // -1 none; 0 = current count; 1-8 explicit
+std::mutex preview_mutex_;
+std::string preview_;                 // guarded by preview_mutex_
+std::atomic<bool> preview_pending_{false};
 
 bool IsQuiet(const ClockSettings::Values& v, int hour) {
     if (v.quiet_from == v.quiet_to) return false;
@@ -69,6 +74,19 @@ void ChimeTask(void*) {
         struct tm t;
         localtime_r(&now, &t);
         const bool time_set = t.tm_year >= 2025 - 1900;
+
+        if (preview_pending_.load()) {
+            if (!CanRing()) continue;
+            std::string clip;
+            {
+                std::lock_guard<std::mutex> lock(preview_mutex_);
+                clip.swap(preview_);
+            }
+            ESP_LOGI(TAG, "preview clip (%u bytes)", static_cast<unsigned>(clip.size()));
+            Application::GetInstance().PlaySound(clip);
+            preview_pending_.store(false);
+            continue;
+        }
 
         const int test = pending_ring_.load();
         if (test >= 0) {
@@ -105,6 +123,16 @@ void Init() {
     if (started) return;
     started = true;
     xTaskCreate(ChimeTask, "clock_chime", 4096, nullptr, 2, nullptr);
+}
+
+bool PlayPreview(std::string ogg) {
+    if (preview_pending_.load()) return false;
+    {
+        std::lock_guard<std::mutex> lock(preview_mutex_);
+        preview_ = std::move(ogg);
+    }
+    preview_pending_.store(true);
+    return true;
 }
 
 void RingNow(int bells) {
