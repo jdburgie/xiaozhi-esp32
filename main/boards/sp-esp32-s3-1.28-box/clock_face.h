@@ -32,6 +32,15 @@ public:
 private:
     void Render();        // ticks + hands into pixels_
     void ApplyPalette();
+    bool SyncSettings();  // pull ClockSettings if changed; true if anything changed
+    bool IsNight(int hour) const;
+
+    Palette day_palette_ = {};
+    Palette night_palette_ = {};
+    uint32_t settings_version_ = 0;
+    int day_start_ = 7;
+    int night_start_ = 19;
+    bool show_seconds_ = true;
 
     lv_obj_t* root_ = nullptr;
     lv_obj_t* canvas_ = nullptr;  // transparent ARGB8888 layer above the numerals

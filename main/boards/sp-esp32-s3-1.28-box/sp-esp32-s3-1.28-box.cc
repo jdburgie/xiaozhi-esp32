@@ -3,6 +3,8 @@
 #include "display/lcd_display.h"
 #include "application.h"
 #include "clock_face.h"
+#include "clock_sd.h"
+#include "clock_web.h"
 #include "settings.h"
 
 #include <ctime>
@@ -454,6 +456,10 @@ public:
         // 显示和背光可用后再初始化省电逻辑，避免空指针
         InitializePowerSaveTimer();
         InitializePowerManager();
+
+        // round-box-clock: microSD (read-only use) and the LAN settings page at roundclock.local
+        clock_sd::Mount();
+        clock_web::StartWhenNetworkReady();
     }
 
     ~Spotpear_ESP32_S3_1_28_BOX() {

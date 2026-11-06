@@ -18,6 +18,7 @@
 // throughout (no pixel rounding). The result goes to a transparent ARGB8888
 // canvas above the numeral labels.
 #include "clock_face.h"
+#include "clock_settings.h"
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -35,30 +36,33 @@ namespace {
 
 const lv_font_t* const kNumeralFont = &font_cinzel_bold_22;
 
-// Day runs [kDayStartHour, kNightStartHour). Fixed for now; sunrise/sunset is roadmap step 4.
-constexpr int kDayStartHour = 7;
-constexpr int kNightStartHour = 19;
+// Colours and day/night hours come from ClockSettings (web settings page). Defaults: face
+// CBB07E parchment (this panel has a cool cast, so it needs a strong warm tone; ~8.2:1 vs ink),
+// ink 1C1A18. Night is the inverse of day: the day face colour becomes the night ink.
 
-// Night is the inverse of day: the day face colour becomes the night ink.
-constexpr uint32_t kParchment = 0xCBB07E;  // warm parchment; this panel has a cool cast, so it needs a strong warm tone. ~8.2:1 vs ink
-constexpr uint32_t kInk = 0x1C1A18;        // warm near-black
+lv_color_t Mix(uint32_t a, uint32_t b, float t) {  // t = 0 -> a, 1 -> b
+    auto ch = [&](int shift) {
+        const float x = ((a >> shift) & 0xFF) * (1 - t) + ((b >> shift) & 0xFF) * t;
+        return static_cast<uint32_t>(x + 0.5f) & 0xFF;
+    };
+    return lv_color_hex((ch(16) << 16) | (ch(8) << 8) | ch(0));
+}
 
-const ClockFace::Palette kDay = {
-    .face = lv_color_hex(kParchment),
-    .numeral = lv_color_hex(0x2A2420),
-    .hour_mark = lv_color_hex(0x2A2420),
-    .minute_tick = lv_color_hex(0x7E6C4E),
-    .hand = lv_color_hex(kInk),
-    .second_hand = lv_color_hex(kInk),
-};
-const ClockFace::Palette kNight = {
-    .face = lv_color_hex(0x000000),
-    .numeral = lv_color_hex(kParchment),
-    .hour_mark = lv_color_hex(kParchment),
-    .minute_tick = lv_color_hex(0x433A2A),  // parchment at ~30%
-    .hand = lv_color_hex(kParchment),
-    .second_hand = lv_color_hex(kParchment),
-};
+void BuildPalettes(uint32_t face, uint32_t ink, ClockFace::Palette& day, ClockFace::Palette& night) {
+    day.face = lv_color_hex(face);
+    day.numeral = Mix(ink, face, 0.08f);
+    day.hour_mark = day.numeral;
+    day.minute_tick = Mix(face, ink, 0.45f);
+    day.hand = lv_color_hex(ink);
+    day.second_hand = lv_color_hex(ink);
+
+    night.face = lv_color_hex(0x000000);
+    night.numeral = lv_color_hex(face);
+    night.hour_mark = night.numeral;
+    night.minute_tick = Mix(0x000000, face, 0.30f);
+    night.hand = lv_color_hex(face);
+    night.second_hand = lv_color_hex(face);
+}
 
 constexpr float kPi = 3.14159265f;
 
@@ -234,7 +238,8 @@ ClockFace::ClockFace(lv_obj_t* parent, int size) : size_(size) {
         lv_obj_remove_flag(canvas_, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    palette_ = &kNight;
+    SyncSettings();
+    palette_ = &night_palette_;
     ApplyPalette();
     lv_obj_add_flag(root_, LV_OBJ_FLAG_HIDDEN);
 }
@@ -325,7 +330,7 @@ void ClockFace::Render() {
     }
 
     // Second hand: hollow counterweight, slim needle, small diamond near the tip.
-    {
+    if (show_seconds_) {
         const float a = second_ * 6.0f;
         const float L = R * 0.93f;
         Frame f(c0, c0, a);
@@ -361,14 +366,36 @@ bool ClockFace::IsVisible() const {
     return !lv_obj_has_flag(root_, LV_OBJ_FLAG_HIDDEN);
 }
 
+bool ClockFace::SyncSettings() {
+    auto& cs = ClockSettings::Get();
+    if (cs.version() == settings_version_) {
+        return false;
+    }
+    settings_version_ = cs.version();
+    const ClockSettings::Values v = cs.Load();
+    BuildPalettes(v.face, v.ink, day_palette_, night_palette_);
+    day_start_ = v.day_start;
+    night_start_ = v.night_start;
+    show_seconds_ = v.show_seconds;
+    return true;
+}
+
+bool ClockFace::IsNight(int hour) const {
+    if (day_start_ < night_start_) {
+        return hour < day_start_ || hour >= night_start_;
+    }
+    return hour >= night_start_ && hour < day_start_;  // day window wraps past midnight
+}
+
 void ClockFace::SetTime(int hour, int minute, int second) {
-    if (hour == hour_ && minute == minute_ && second == second_) {
+    const bool settings_changed = SyncSettings();
+    if (!settings_changed && hour == hour_ && minute == minute_ && second == second_) {
         return;
     }
-    const bool night = hour < kDayStartHour || hour >= kNightStartHour;
-    if (night != night_ || hour_ < 0) {
+    const bool night = IsNight(hour);
+    if (settings_changed || night != night_ || hour_ < 0) {
         night_ = night;
-        palette_ = night ? &kNight : &kDay;
+        palette_ = night ? &night_palette_ : &day_palette_;
         ApplyPalette();
     }
     hour_ = hour;

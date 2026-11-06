@@ -159,10 +159,17 @@ void Application::CheckNewVersion(Ota& ota) {
         retry_delay = 10; // 重置重试延迟时间
 
         if (ota.HasNewVersion()) {
+#if CONFIG_BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
+            // round-box-clock: never let the XiaoZhi server install official firmware over the
+            // clock build (it would on any newer version, or whenever it sets "force": 1).
+            // The check still runs because activation and server time come from it.
+            ESP_LOGW(TAG, "round-box-clock: server offers a firmware update; auto-upgrade disabled, ignoring");
+#else
             if (UpgradeFirmware(ota)) {
                 return; // This line will never be reached after reboot
             }
             // If upgrade failed, continue to normal operation (don't break, just fall through)
+#endif
         }
 
         // No new version, mark the current version as valid
