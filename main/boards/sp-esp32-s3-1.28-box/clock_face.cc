@@ -27,27 +27,27 @@
 #include <cstring>
 #include <initializer_list>
 
-LV_FONT_DECLARE(font_cinzel_22);  // Cinzel (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
+LV_FONT_DECLARE(font_cinzel_bold_22);  // Cinzel Bold (SIL OFL 1.1), glyphs I V X only; see font_cinzel_OFL.txt
 
 #define TAG "ClockFace"
 
 namespace {
 
-const lv_font_t* const kNumeralFont = &font_cinzel_22;
+const lv_font_t* const kNumeralFont = &font_cinzel_bold_22;
 
 // Day runs [kDayStartHour, kNightStartHour). Fixed for now; sunrise/sunset is roadmap step 4.
 constexpr int kDayStartHour = 7;
 constexpr int kNightStartHour = 19;
 
 // Night is the inverse of day: the day face colour becomes the night ink.
-constexpr uint32_t kParchment = 0xD8C29A;  // warm parchment; the panel's cool white point needs this much warmth (E3D3B4 read white). ~9.9:1 vs ink
+constexpr uint32_t kParchment = 0xCBB07E;  // warm parchment; this panel has a cool cast, so it needs a strong warm tone. ~8.2:1 vs ink
 constexpr uint32_t kInk = 0x1C1A18;        // warm near-black
 
 const ClockFace::Palette kDay = {
     .face = lv_color_hex(kParchment),
     .numeral = lv_color_hex(0x2A2420),
     .hour_mark = lv_color_hex(0x2A2420),
-    .minute_tick = lv_color_hex(0x8C7A5A),
+    .minute_tick = lv_color_hex(0x7E6C4E),
     .hand = lv_color_hex(kInk),
     .second_hand = lv_color_hex(kInk),
 };
@@ -55,7 +55,7 @@ const ClockFace::Palette kNight = {
     .face = lv_color_hex(0x000000),
     .numeral = lv_color_hex(kParchment),
     .hour_mark = lv_color_hex(kParchment),
-    .minute_tick = lv_color_hex(0x48402E),  // parchment at ~30%
+    .minute_tick = lv_color_hex(0x433A2A),  // parchment at ~30%
     .hand = lv_color_hex(kParchment),
     .second_hand = lv_color_hex(kParchment),
 };
