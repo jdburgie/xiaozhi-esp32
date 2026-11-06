@@ -1,4 +1,4 @@
-﻿// round-box-clock: analog clock face. See clock_face.h.
+// round-box-clock: analog clock face. See clock_face.h.
 //
 // Layout, outside in:
 //   outer ring  - Roman numerals XII/III/VI/IX (Cinzel), short slim marks at the other eight hours
