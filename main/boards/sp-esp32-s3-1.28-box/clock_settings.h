@@ -17,6 +17,9 @@ public:
         bool show_seconds = true;
         int slide_secs = 10;       // slideshow interval, [kMinSlideSecs, kMaxSlideSecs]
         bool slide_shuffle = false;
+        bool chime_enabled = true;  // ship's bell every half hour
+        int quiet_from = 22;        // hour [0,23]; quiet_from == quiet_to means never quiet
+        int quiet_to = 7;
     };
 
     static constexpr int kMinSlideSecs = 2;

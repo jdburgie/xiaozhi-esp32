@@ -680,6 +680,11 @@ if(NOT LANG_DIR STREQUAL "en-US")
 endif()
 
 file(GLOB COMMON_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/common/*.ogg)
+# round-box-clock: board-specific sounds (ship's bells), embedded only for this board
+if(CONFIG_BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX)
+    file(GLOB CLOCK_SOUNDS ${CMAKE_CURRENT_SOURCE_DIR}/boards/sp-esp32-s3-1.28-box/sounds/*.ogg)
+    list(APPEND COMMON_SOUNDS ${CLOCK_SOUNDS})
+endif()
 
 # If target chip is ESP32, exclude specific files to avoid build errors
 if(CONFIG_IDF_TARGET_ESP32)

@@ -7,6 +7,7 @@
 #include "clock_sd.h"
 #include "clock_settings.h"
 #include "clock_slideshow.h"
+#include "clock_chime.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -107,6 +108,14 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.
 <p class="note">Tap the clock to start or stop the slideshow. Say "Jarvis" to talk; pictures step aside during a conversation and come back after.</p>
 </section>
 
+<section><h2>Ship's bell</h2>
+<div class="row"><label for="chime">Strike the bells every half hour</label><input type="checkbox" id="chime"></div>
+<div class="row"><label for="qf">Quiet from</label><select id="qf"></select></div>
+<div class="row"><label for="qt">Quiet until</label><select id="qt"></select></div>
+<div class="row"><label for="rb">Ring now</label><span class="actions" style="margin:0"><select id="rb"></select><button class="ghost sm" id="ring">Ring</button></span></div>
+<p class="note">One bell at half past the first hour of each four-hour watch, up to eight bells at 4, 8 and 12 o'clock, struck in pairs. Silent during a conversation and in quiet hours (same hour = never quiet). Loudness follows the speaker volume.</p>
+</section>
+
 <div class="actions"><button class="ghost" id="reset">Defaults</button><button id="save">Save</button></div>
 <div id="msg"></div>
 
@@ -125,10 +134,11 @@ const hex=n=>'#'+n.toString(16).padStart(6,'0');
 const num=s=>parseInt(s.slice(1),16);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const S=240,BYTES=S*S*2;
-const DEF={face:0xCBB07E,ink:0x1C1A18,day_start:7,night_start:19,show_seconds:true,brightness:50,slide_secs:10,slide_shuffle:false};
+const DEF={face:0xCBB07E,ink:0x1C1A18,day_start:7,night_start:19,show_seconds:true,brightness:50,slide_secs:10,slide_shuffle:false,chime_enabled:true,quiet_from:22,quiet_to:7};
 const INTERVALS=[3,5,10,15,20,30,45,60,120,300,600,1800,3600];
 const fmtSecs=s=>s<60?s+' seconds':s<3600?(s/60)+(s==60?' minute':' minutes'):(s/3600)+(s==3600?' hour':' hours');
-for(const id of['ds','ns'])for(let h=0;h<24;h++)$(id).add(new Option(String(h).padStart(2,'0')+':00',h));
+for(let n=0;n<=8;n++)$('rb').add(new Option(n?n+(n>1?' bells':' bell'):'Current',n));
+for(const id of['ds','ns','qf','qt'])for(let h=0;h<24;h++)$(id).add(new Option(String(h).padStart(2,'0')+':00',h));
 for(const s of INTERVALS)$('ss').add(new Option(fmtSecs(s),s));
 function setInterval_(v){if(![...$('ss').options].some(o=>+o.value==v))$('ss').add(new Option(fmtSecs(v),v));$('ss').value=v;}
 function preview(){const f=$('face').value,i=$('ink').value;
@@ -136,10 +146,12 @@ function preview(){const f=$('face').value,i=$('ink').value;
  $('blv').textContent=$('bl').value+'%';}
 function fill(s){$('face').value=hex(s.face);$('ink').value=hex(s.ink);$('secs').checked=s.show_seconds;
  $('ds').value=s.day_start;$('ns').value=s.night_start;$('bl').value=s.brightness;
- setInterval_(s.slide_secs??10);$('shuf').checked=!!s.slide_shuffle;preview();}
+ setInterval_(s.slide_secs??10);$('shuf').checked=!!s.slide_shuffle;
+ $('chime').checked=s.chime_enabled??true;$('qf').value=s.quiet_from??22;$('qt').value=s.quiet_to??7;preview();}
 async function load(){const r=await fetch('/api/settings');fill(await r.json());}
 async function save(){const body={face:num($('face').value),ink:num($('ink').value),show_seconds:$('secs').checked,
- day_start:+$('ds').value,night_start:+$('ns').value,brightness:+$('bl').value,slide_secs:+$('ss').value,slide_shuffle:$('shuf').checked};
+ day_start:+$('ds').value,night_start:+$('ns').value,brightness:+$('bl').value,slide_secs:+$('ss').value,slide_shuffle:$('shuf').checked,
+ chime_enabled:$('chime').checked,quiet_from:+$('qf').value,quiet_to:+$('qt').value};
  $('msg').textContent='Saving…';
  const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  $('msg').textContent=r.ok?'Saved. The clock updates within a second.':'Not saved: '+await r.text();}
@@ -157,6 +169,8 @@ async function status(){try{const s=await(await fetch('/api/status')).json();
 $('save').onclick=save;$('reset').onclick=()=>{fill(DEF);$('msg').textContent='Defaults loaded. Press Save to apply.';};
 async function slideshow(action){const r=await fetch('/api/slideshow?action='+action,{method:'POST'});
  $('msg').textContent=r.ok?'':'Slideshow: '+await r.text();setTimeout(status,700);}
+$('ring').onclick=async()=>{const r=await fetch('/api/chime/ring?bells='+$('rb').value,{method:'POST'});
+ $('msg').textContent=r.ok?'Ringing.':'Ring failed: '+await r.text();};
 $('ssStart').onclick=()=>slideshow('start');$('ssNext').onclick=()=>slideshow('next');$('ssStop').onclick=()=>slideshow('stop');
 
 // ---- pictures: decode RGB565 for thumbnails, convert uploads in the browser
@@ -258,6 +272,9 @@ esp_err_t GetSettingsHandler(httpd_req_t* req) {
     cJSON_AddNumberToObject(root, "brightness", CurrentBrightness());
     cJSON_AddNumberToObject(root, "slide_secs", v.slide_secs);
     cJSON_AddBoolToObject(root, "slide_shuffle", v.slide_shuffle);
+    cJSON_AddBoolToObject(root, "chime_enabled", v.chime_enabled);
+    cJSON_AddNumberToObject(root, "quiet_from", v.quiet_from);
+    cJSON_AddNumberToObject(root, "quiet_to", v.quiet_to);
     return SendJson(req, root);
 }
 
@@ -295,6 +312,10 @@ esp_err_t PostSettingsHandler(httpd_req_t* req) {
     get_int("night_start", v.night_start);
     get_int("brightness", brightness);
     get_int("slide_secs", v.slide_secs);
+    get_int("quiet_from", v.quiet_from);
+    get_int("quiet_to", v.quiet_to);
+    cJSON* chime = cJSON_GetObjectItem(root, "chime_enabled");
+    if (cJSON_IsBool(chime)) v.chime_enabled = cJSON_IsTrue(chime);
     cJSON* secs = cJSON_GetObjectItem(root, "show_seconds");
     if (cJSON_IsBool(secs)) v.show_seconds = cJSON_IsTrue(secs);
     cJSON* shuffle = cJSON_GetObjectItem(root, "slide_shuffle");
@@ -526,6 +547,17 @@ esp_err_t DeleteHandler(httpd_req_t* req) {
     return SendJson(req, root);
 }
 
+// POST /api/chime/ring?bells=0..8  (0 = the count for the current half hour). Ignores quiet hours.
+esp_err_t ChimeRingHandler(httpd_req_t* req) {
+    const std::string b = QueryParam(req, "bells");
+    const int bells = b.empty() ? 0 : atoi(b.c_str());
+    if (bells < 0 || bells > 8) return Fail(req, HTTPD_400_BAD_REQUEST, "bells must be 0-8");
+    clock_chime::RingNow(bells);
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "bells", bells);
+    return SendJson(req, root);
+}
+
 // POST /api/slideshow?action=start|stop|toggle|next
 esp_err_t SlideshowHandler(httpd_req_t* req) {
     const std::string action = QueryParam(req, "action");
@@ -579,6 +611,7 @@ void StartServices() {
         {.uri = "/api/sd/file", .method = HTTP_GET, .handler = FileHandler, .user_ctx = nullptr},
         {.uri = "/api/sd/delete", .method = HTTP_POST, .handler = DeleteHandler, .user_ctx = nullptr},
         {.uri = "/api/slideshow", .method = HTTP_POST, .handler = SlideshowHandler, .user_ctx = nullptr},
+        {.uri = "/api/chime/ring", .method = HTTP_POST, .handler = ChimeRingHandler, .user_ctx = nullptr},
     };
     for (const auto& u : uris) {
         if (httpd_register_uri_handler(server, &u) != ESP_OK) {

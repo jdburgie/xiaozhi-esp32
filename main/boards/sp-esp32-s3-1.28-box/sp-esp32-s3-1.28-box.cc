@@ -5,6 +5,7 @@
 #include "clock_face.h"
 #include "clock_overlay.h"
 #include "clock_slideshow.h"
+#include "clock_chime.h"
 #include "clock_sd.h"
 #include "clock_web.h"
 #include "settings.h"
@@ -473,6 +474,7 @@ public:
         // round-box-clock: microSD (read-only use) and the LAN settings page at roundclock.local
         clock_sd::Mount();
         clock_slideshow::Init();
+        clock_chime::Init();
         clock_web::StartWhenNetworkReady();
     }
 
