@@ -3,8 +3,14 @@
 
 #include "board.h"
 #include "backlight.h"
+#include "clock_overlay.h"
 #include "clock_sd.h"
 #include "clock_settings.h"
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <cctype>
+#include <cstdlib>
 
 #include <cJSON.h>
 #include <esp_app_desc.h>
@@ -81,6 +87,8 @@ dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:.
 <div class="actions"><button class="ghost" id="reset">Defaults</button><button id="save">Save</button></div>
 <div id="msg"></div>
 
+<section><h2>Pictures on the SD card</h2><div id="imgs"><small>Loading…</small></div></section>
+
 <section><h2>Status</h2><dl id="st"><dt>Loading</dt><dd>…</dd></dl></section>
 </main>
 <script>
@@ -109,7 +117,10 @@ async function status(){try{const s=await(await fetch('/api/status')).json();
  $('st').innerHTML=rows.map(([k,v])=>`<dt>${k}</dt><dd>${String(v).replace(/</g,'&lt;')}</dd>`).join('');}catch(e){}}
 ['face','ink','bl'].forEach(id=>$(id).addEventListener('input',preview));
 $('save').onclick=save;$('reset').onclick=()=>{fill(DEF);$('msg').textContent='Defaults loaded. Press Save to apply.';};
-load();status();setInterval(status,5000);
+async function images(){try{const r=await(await fetch('/api/sd/images')).json();const shown=r.images.filter(i=>i.name.endsWith('.rgb565'));
+ $('imgs').innerHTML=shown.length?shown.map(i=>`<div class="row"><label>${i.name.replace(/</g,'&lt;')}</label><button class="ghost" data-n="${encodeURIComponent(i.name)}">Show 10 s</button></div>`).join(''):'<small>No .rgb565 pictures in /images yet.</small>';
+ $('imgs').querySelectorAll('button').forEach(b=>b.onclick=async()=>{const r=await fetch('/api/display/show?secs=10&name='+b.dataset.n,{method:'POST'});$('msg').textContent=r.ok?'Showing on the clock for 10 s.':'Show failed: '+await r.text();});}catch(e){$('imgs').innerHTML='<small>SD card not available.</small>';}}
+load();status();images();setInterval(status,5000);
 </script></body></html>)HTML";
 
 // ---------------------------------------------------------------- handlers
@@ -238,6 +249,100 @@ esp_err_t StatusHandler(httpd_req_t* req) {
     return SendJson(req, root);
 }
 
+// ---------------------------------------------------------------- SD images
+constexpr const char* kImageDir = "/sdcard/images";
+constexpr size_t kMaxUpload = 2 * 1024 * 1024;
+
+bool ValidImageName(const std::string& n) {
+    if (n.empty() || n.size() > 40 || n[0] == '.') return false;
+    for (char c : n) {
+        if (!(isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '_' || c == '-')) return false;
+    }
+    const auto dot = n.rfind('.');
+    if (dot == std::string::npos) return false;
+    const std::string ext = n.substr(dot);
+    return ext == ".rgb565" || ext == ".png" || ext == ".jpg" || ext == ".bmp";
+}
+
+std::string QueryParam(httpd_req_t* req, const char* key) {
+    char query[128];
+    char val[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return "";
+    if (httpd_query_key_value(query, key, val, sizeof(val)) != ESP_OK) return "";
+    return val;
+}
+
+esp_err_t Fail(httpd_req_t* req, httpd_err_code_t code, const char* msg) {
+    httpd_resp_send_err(req, code, msg);
+    return ESP_FAIL;
+}
+
+esp_err_t UploadHandler(httpd_req_t* req) {
+    if (!clock_sd::IsMounted()) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card not mounted");
+    const std::string name = QueryParam(req, "name");
+    if (!ValidImageName(name)) return Fail(req, HTTPD_400_BAD_REQUEST, "name: [A-Za-z0-9._-], max 40, .rgb565/.png/.jpg/.bmp");
+    if (req->content_len == 0 || req->content_len > kMaxUpload) return Fail(req, HTTPD_400_BAD_REQUEST, "empty or larger than 2 MB");
+
+    mkdir(kImageDir, 0775);  // fine if it exists
+    const std::string path = std::string(kImageDir) + "/" + name;
+    const std::string tmp = path + ".part";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "cannot create file");
+    char* buf = static_cast<char*>(malloc(4096));
+    size_t left = req->content_len;
+    bool ok = buf != nullptr;
+    while (ok && left > 0) {
+        int r = httpd_req_recv(req, buf, left < 4096 ? left : 4096);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0 || fwrite(buf, 1, r, f) != static_cast<size_t>(r)) ok = false;
+        else left -= r;
+    }
+    free(buf);
+    fclose(f);
+    if (!ok) {
+        remove(tmp.c_str());
+        return Fail(req, HTTPD_500_INTERNAL_SERVER_ERROR, "upload interrupted or write failed");
+    }
+    remove(path.c_str());
+    rename(tmp.c_str(), path.c_str());
+    ESP_LOGI(TAG, "uploaded %s (%u bytes)", path.c_str(), static_cast<unsigned>(req->content_len));
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "saved", path.c_str());
+    cJSON_AddNumberToObject(root, "bytes", req->content_len);
+    return SendJson(req, root);
+}
+
+esp_err_t ListImagesHandler(httpd_req_t* req) {
+    cJSON* root = cJSON_CreateObject();
+    cJSON* arr = cJSON_AddArrayToObject(root, "images");
+    if (DIR* dir = opendir(kImageDir)) {
+        while (dirent* e = readdir(dir)) {
+            if (e->d_type == DT_DIR || !ValidImageName(e->d_name)) continue;
+            cJSON* item = cJSON_CreateObject();
+            cJSON_AddStringToObject(item, "name", e->d_name);
+            struct stat st;
+            const std::string p = std::string(kImageDir) + "/" + e->d_name;
+            if (stat(p.c_str(), &st) == 0) cJSON_AddNumberToObject(item, "bytes", static_cast<double>(st.st_size));
+            cJSON_AddItemToArray(arr, item);
+        }
+        closedir(dir);
+    }
+    return SendJson(req, root);
+}
+
+esp_err_t ShowHandler(httpd_req_t* req) {
+    const std::string name = QueryParam(req, "name");
+    if (!ValidImageName(name)) return Fail(req, HTTPD_400_BAD_REQUEST, "bad name");
+    const std::string secs_s = QueryParam(req, "secs");
+    const int secs = secs_s.empty() ? 10 : atoi(secs_s.c_str());
+    const std::string err = clock_overlay::ShowRgb565File(std::string(kImageDir) + "/" + name, secs);
+    if (!err.empty()) return Fail(req, HTTPD_400_BAD_REQUEST, err.c_str());
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "showing", name.c_str());
+    cJSON_AddNumberToObject(root, "secs", secs);
+    return SendJson(req, root);
+}
+
 // ---------------------------------------------------------------- startup
 void StartServices() {
     if (esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
@@ -259,7 +364,8 @@ void StartServices() {
     config.ctrl_port = 32769;      // keep clear of any other httpd instance's default ctrl port
     config.stack_size = 6144;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 12;
+    config.recv_wait_timeout = 15;  // uploads
     httpd_handle_t server = nullptr;
     err = httpd_start(&server, &config);
     if (err != ESP_OK) {
@@ -271,6 +377,9 @@ void StartServices() {
         {.uri = "/api/settings", .method = HTTP_GET, .handler = GetSettingsHandler, .user_ctx = nullptr},
         {.uri = "/api/settings", .method = HTTP_POST, .handler = PostSettingsHandler, .user_ctx = nullptr},
         {.uri = "/api/status", .method = HTTP_GET, .handler = StatusHandler, .user_ctx = nullptr},
+        {.uri = "/api/sd/upload", .method = HTTP_POST, .handler = UploadHandler, .user_ctx = nullptr},
+        {.uri = "/api/sd/images", .method = HTTP_GET, .handler = ListImagesHandler, .user_ctx = nullptr},
+        {.uri = "/api/display/show", .method = HTTP_POST, .handler = ShowHandler, .user_ctx = nullptr},
     };
     for (const auto& u : uris) {
         httpd_register_uri_handler(server, &u);
