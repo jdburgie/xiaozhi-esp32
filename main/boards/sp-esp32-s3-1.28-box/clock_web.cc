@@ -7,6 +7,7 @@
 #include "clock_sd.h"
 #include "clock_settings.h"
 #include "clock_slideshow.h"
+#include "clock_web_icons.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -41,6 +42,9 @@ const char kIndexHtml[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Round Box Clock</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <style>
 /* Three Oak Woods palette (threeoakwoods-com): forest, deep, paper, ink, gold */
 :root{--bg:#f5f1e6;--card:#fffefb;--ink:#2b3a33;--muted:#58665e;--line:#e3d9c3;--accent:#2c654b;--accent-hover:#214d3b;--gold:#8a5a12;--pale:#eaf0e8;--danger:#9b2c22}
@@ -539,6 +543,26 @@ esp_err_t SlideshowHandler(httpd_req_t* req) {
     return SendJson(req, root);
 }
 
+// GET /favicon.ico, /favicon.svg, /apple-touch-icon.png: Three Oak Woods site icons, from flash.
+esp_err_t IconHandler(httpd_req_t* req) {
+    const char* uri = req->uri;
+    const unsigned char* data = kFaviconIco;
+    size_t size = sizeof(kFaviconIco);
+    const char* type = "image/x-icon";
+    if (strcmp(uri, "/favicon.svg") == 0) {
+        data = kFaviconSvg;
+        size = sizeof(kFaviconSvg);
+        type = "image/svg+xml";
+    } else if (strcmp(uri, "/apple-touch-icon.png") == 0) {
+        data = kAppleTouchIcon;
+        size = sizeof(kAppleTouchIcon);
+        type = "image/png";
+    }
+    httpd_resp_set_type(req, type);
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=604800");  // a week; changes need a reflash
+    return httpd_resp_send(req, reinterpret_cast<const char*>(data), size);
+}
+
 // ---------------------------------------------------------------- startup
 void StartServices() {
     if (esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
@@ -560,7 +584,7 @@ void StartServices() {
     config.ctrl_port = 32769;      // keep clear of any other httpd instance's default ctrl port
     config.stack_size = 6144;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;
     config.recv_wait_timeout = 15;  // uploads
     httpd_handle_t server = nullptr;
     err = httpd_start(&server, &config);
@@ -579,6 +603,9 @@ void StartServices() {
         {.uri = "/api/sd/file", .method = HTTP_GET, .handler = FileHandler, .user_ctx = nullptr},
         {.uri = "/api/sd/delete", .method = HTTP_POST, .handler = DeleteHandler, .user_ctx = nullptr},
         {.uri = "/api/slideshow", .method = HTTP_POST, .handler = SlideshowHandler, .user_ctx = nullptr},
+        {.uri = "/favicon.ico", .method = HTTP_GET, .handler = IconHandler, .user_ctx = nullptr},
+        {.uri = "/favicon.svg", .method = HTTP_GET, .handler = IconHandler, .user_ctx = nullptr},
+        {.uri = "/apple-touch-icon.png", .method = HTTP_GET, .handler = IconHandler, .user_ctx = nullptr},
     };
     for (const auto& u : uris) {
         if (httpd_register_uri_handler(server, &u) != ESP_OK) {
